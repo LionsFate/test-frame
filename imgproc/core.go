@@ -383,14 +383,14 @@ func (ip *ImageProc) getPathCache(cr *checkRun, path string, inheritTags tags.Ta
 	file, err := cr.bc.bfs.Open(path)
 	if err != nil {
 		fl.Err(err).Msg("open")
-		return nil, fmt.Errorf("open(%d): %w", path, err)
+		return nil, fmt.Errorf("open(%s): %w", path, err)
 	}
 
 	fstat, err := file.Stat()
 	if err != nil {
 		file.Close()
 		fl.Err(err).Msg("stat")
-		return nil, fmt.Errorf("stat(%d): %w", path, err)
+		return nil, fmt.Errorf("stat(%s): %w", path, err)
 	}
 
 	file.Close()

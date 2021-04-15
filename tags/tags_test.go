@@ -125,11 +125,11 @@ func TestTagRules(t *testing.T) {
 	tgs := stt([]string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "two"})
 	trs := mtr(ConfTagRules{
 		ConfTagRule{
-			Give: "tr_one",
+			Tag: "tr_one",
 			Any:  []string{ "one", "two", "five", "seven" },
 		},
 		ConfTagRule{
-			Give: "tr_two",
+			Tag: "tr_two",
 			None: []string{ "tr_one" },
 		},
 	})
@@ -157,7 +157,7 @@ func TestTagRuleA(t *testing.T) {
 
 	// Lets say a basic rule, immediate family only.
 	trc := &ConfTagRule{
-		Give: "immediate",
+		Tag: "immediate",
 		Any:  []string{"brother", "sister", "mother", "father"},
 		None: []string{"uncle", "aunt"},
 	}

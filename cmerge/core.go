@@ -1,15 +1,4 @@
 // Handlers merging the file cache into a usable cache for display.
-//
-// This has two basic modes of database operation -
-//
-// 1.) LISTEN - With this method we run a LISTEN query and wait for updates this way.
-// 2.) POLL - With this method we run the Partial query every PollInterval to check for updates.
-//
-// The LISTEN method is recommend only if you expect frequent and regular updates.
-// It keeps the connection open and responds as soon as it gets a NOTIFY on the changes.
-//
-// POLL is recommend if you expect infrequent updates, as this allows the connection to be closed
-// in between long updates.
 package cmerge
 
 import (
@@ -54,8 +43,8 @@ func yconfMerge(inAInt, inBInt interface{}) (interface{}, error) {
 		inA.Queries.Full = inB.Queries.Full
 	}
 
-	if inA.Queries.Partial != inB.Queries.Partial && inB.Queries.Partial != "" {
-		inA.Queries.Partial = inB.Queries.Partial
+	if inA.Queries.Poll != inB.Queries.Poll && inB.Queries.Poll != "" {
+		inA.Queries.Poll = inB.Queries.Poll
 	}
 
 	if inA.Queries.Select != inB.Queries.Select && inB.Queries.Select != "" {
@@ -115,7 +104,7 @@ func yconfChanged(origConfInt, newConfInt interface{}) bool {
 		return true
 	}
 
-	if origConf.Queries.Partial != newConf.Queries.Partial {
+	if origConf.Queries.Poll != newConf.Queries.Poll {
 		return true
 	}
 
@@ -189,7 +178,7 @@ func New(confPath string, tm types.TagManager, l *zerolog.Logger) (*CMerge, erro
 	// Start background processing to watch configuration for changes.
 	cm.yc.Start()
 
-	// Start the partial loop.
+	// Start the loop.
 	go cm.loopy()
 
 	fl.Debug().Send()
@@ -330,6 +319,9 @@ func (cm *CMerge) selectMerged() error {
 			return err
 		}
 
+		// Don't assume the database doesn't have duplicates and is sorted properly.
+		tgs = tgs.Fix()
+
 		// Note that we don't care if we exist already or not, as we are only supposed to be called at startup.
 		//
 		// Its also possible for us to be called when you want to replace the entire cache, in that case the cache should be
@@ -357,7 +349,7 @@ func (cm *CMerge) selectMerged() error {
 func (cm *CMerge) pollQuery() error {
 	var fid uint64
 	var hash string
-	var changed bool
+	var changed, enabled bool
 	var tgs tags.Tags
 
 	fl := cm.l.With().Str("func", "pollQuery").Logger()
@@ -369,9 +361,9 @@ func (cm *CMerge) pollQuery() error {
 	}
 
 	// The full query should already be prepared at connection.
-	fullRows, err := db.Query(bg, "full")
+	pollRows, err := db.Query(bg, "poll")
 	if err != nil {
-		fl.Err(err).Msg("full")
+		fl.Err(err).Msg("poll")
 		return err
 	}
 
@@ -387,7 +379,7 @@ func (cm *CMerge) pollQuery() error {
 		ca.pollChanged = make(map[string]*hashCache, 1)
 	}
 
-	for fullRows.Next() {
+	for pollRows.Next() {
 		// SELECT fid, hash, tags, enabled FROM files.files WHERE updated >= NOW() - interval '5 minutes'
 		//
 		// I took some time to think about how I wanted to do this query.
@@ -402,16 +394,25 @@ func (cm *CMerge) pollQuery() error {
 		//
 		// So I opted to move the update tracking to the query itself, and only get recently changed rows based off
 		// the current time.
-		if err := fullRows.Scan(&fid, &hash, &tgs); err != nil {
-			fullRows.Close()
-			fl.Err(err).Msg("full-rows-scan")
+		if err := pollRows.Scan(&fid, &hash, &tgs, &enabled); err != nil {
+			pollRows.Close()
+			fl.Err(err).Msg("poll-rows-scan")
 			return err
 		}
 
+		// Don't assume the database doesn't have duplicates and is sorted properly.
+		tgs = tgs.Fix()
 
 		// Does this hash already exist?
 		hc, ok := ca.hashes[hash]
 		if !ok {
+			// Nope - Is it enabled?
+			//
+			// New file that is already disabled? Go ahead and skip it.
+			if !enabled {
+				continue
+			}
+
 			// Nope, first one - Go ahead and create it.
 			hc = &hashCache{
 				Hash:    hash,
@@ -426,12 +427,25 @@ func (cm *CMerge) pollQuery() error {
 		// Is this file new?
 		fc, ok := hc.Files[fid]
 		if !ok {
+			// Enabled?
+			if !enabled {
+				// Same logic as above, skip this.
+				continue
+			}
+
 			// File is new, so make it.
 			fc = &fileCache{
 				ID: fid,
 			}
 
 			hc.Files[fid] = fc
+			changed = true
+		}
+
+		// Should the file be removed?
+		if !enabled {
+			// Yep, so delete the file fileCache.
+			delete(hc.Files, fid)
 			changed = true
 		}
 
@@ -445,7 +459,7 @@ func (cm *CMerge) pollQuery() error {
 		//
 		// Note that duplicates are OK, we expect them to happen occasionally.
 		// Two files with the same hash changing in the same updated.
-		// 
+		//
 		// It adds a little more work but not a whole lot.
 		if changed {
 			changed = false
@@ -453,7 +467,7 @@ func (cm *CMerge) pollQuery() error {
 		}
 	}
 
-	fullRows.Close()
+	pollRows.Close()
 
 	return nil
 } // }}}
@@ -741,8 +755,8 @@ func (cm *CMerge) checkConf(co *conf, reload bool) (bool, uint64) {
 		return false, 0
 	}
 
-	if co.Queries.Partial == "" {
-		fl.Warn().Msg("Missing queries.Partial")
+	if co.Queries.Poll == "" {
+		fl.Warn().Msg("Missing queries.Poll")
 		return false, 0
 	}
 
@@ -792,7 +806,7 @@ func (cm *CMerge) checkConf(co *conf, reload bool) (bool, uint64) {
 		ucBits |= ucDBQuery
 	}
 
-	if co.Queries.Partial != oldco.Queries.Partial {
+	if co.Queries.Poll != oldco.Queries.Poll {
 		ucBits |= ucDBQuery
 	}
 
@@ -938,7 +952,7 @@ func (cm *CMerge) notifyConf() {
 		go cm.doFull()
 	}
 
-	// Note - We did not check ucPullInt here, thats handled in the partial loop and it will adjust on its next patial run.
+	// Note - We did not check ucPullInt here, thats handled in the loop and it will adjust on its next run.
 	fl.Info().Msg("configuration updated")
 } // }}}
 
@@ -1062,8 +1076,8 @@ func (cm *CMerge) setupDB(qu *confQueries, db *pgx.Conn) error {
 		return err
 	}
 
-	if _, err := db.Prepare(bg, "partial", qu.Partial); err != nil {
-		fl.Err(err).Msg("partial")
+	if _, err := db.Prepare(bg, "poll", qu.Poll); err != nil {
+		fl.Err(err).Msg("poll")
 		return err
 	}
 
@@ -1128,7 +1142,7 @@ func (cm *CMerge) getConf() *conf {
 
 // func CMerge.loopy {{{
 
-// Handles our basic background tasks, partial and full queries.
+// Handles our basic background tasks, full and poll queries.
 func (cm *CMerge) loopy() {
 	var errors uint32 = 0
 
@@ -1176,7 +1190,7 @@ func (cm *CMerge) loopy() {
 				errors += 1
 
 				// Update the ticker to add the errors.
-				nextPoll.Reset(pollInt * time.Duration(time.Second * time.Duration(errors)))
+				nextPoll.Reset(pollInt * time.Duration(time.Second*time.Duration(errors)))
 			} else {
 				// No error, so reset any possible error count.
 				if errors > 0 {

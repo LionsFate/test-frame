@@ -12,7 +12,7 @@ import (
 
 type confQueries struct {
 	Full    string `yaml:"full"`
-	Partial string `yaml:"partial"`
+	Poll    string `yaml:"poll"`
 	Select  string `yaml:"select"`
 	Insert  string `yaml:"insert"`
 	Update  string `yaml:"update"`
@@ -30,7 +30,7 @@ type confYAML struct {
 	// If a file contains any of these tags, they are flagged as blocked
 	BlockTags []string
 
-	// Every interval we run the Partial query
+	// Every interval we run the Poll query
 	PollInterval time.Duration `yaml:"pollinterval"`
 
 	// Every interval we run the Full query
@@ -58,7 +58,7 @@ type conf struct {
 	// If a file contains any of these tags, they are flagged as blocked
 	BlockTags tags.Tags
 
-	// Every interval we run the Partial query
+	// Every interval we run the Poll query
 	PollInterval time.Duration
 
 	// Every interval we run the Full query
@@ -66,8 +66,8 @@ type conf struct {
 }
 
 type fileCache struct {
-	ID      uint64
-	Tags    tags.Tags
+	ID   uint64
+	Tags tags.Tags
 }
 
 // type hashCache struct {{{
@@ -133,9 +133,6 @@ type CMerge struct {
 
 	// Do not access directly, use atomics.
 	closed uint32
-
-	// The last update time reported from the database, used in the partial query.
-	lastUp time.Time
 
 	tm types.TagManager
 
