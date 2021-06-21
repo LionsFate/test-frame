@@ -1,6 +1,7 @@
 package tags
 
 import (
+	"sort"
 	"sync"
 	"strings"
 	"errors"
@@ -61,9 +62,35 @@ type ConfTagRule struct {
 
 type ConfTagRules []ConfTagRule
 
+type ConfTagWeights map[string]int
+
 type TagManager interface {
 	Get(string) (uint64, error)
 }
+
+// func ConfMakeTagWeights {{{
+
+func ConfMakeTagWeights(ctw ConfTagWeights, tm TagManager) (TagWeights, error) {
+	// Pre-allocate the space we expect we will need.
+	tw := make(TagWeights, 0, len(ctw))
+
+	for tag, weight := range ctw {
+		id, err := tm.Get(tag)
+		if err != nil {
+			return tw, err
+		}
+
+		tw = append(tw, TagWeight{
+			Tag:    id,
+			Weight: weight,
+		})
+	}
+
+	// Sort the TagWeights.
+	sort.Slice(tw, func(i, j int) bool { return tw[i].Tag < tw[j].Tag })
+
+	return tw, nil
+} // }}}
 
 // func ConfMakeTagRule {{{
 

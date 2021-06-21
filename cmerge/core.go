@@ -360,7 +360,7 @@ func (cm *CMerge) pollQuery() error {
 		return err
 	}
 
-	// The full query should already be prepared at connection.
+	// The query should already be prepared at connection.
 	pollRows, err := db.Query(bg, "poll")
 	if err != nil {
 		fl.Err(err).Msg("poll")
@@ -487,7 +487,7 @@ func (cm *CMerge) fullQuery() error {
 		return err
 	}
 
-	// The full query should already be prepared at connection.
+	// The query should already be prepared at connection.
 	fullRows, err := db.Query(bg, "full")
 	if err != nil {
 		fl.Err(err).Msg("full")

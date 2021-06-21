@@ -142,7 +142,7 @@ func (t Tags) Contains(r Tags) bool {
 
 // func Tags.Combine {{{
 
-// Combines tags from two tag list and returns the combined result.
+// Combines tags from two tag lists and returns the combined result.
 //
 // Note this tries to combine the result into t, so this may (or may not) modifed t.
 //
@@ -431,6 +431,91 @@ func (tw TagWeights) Equal(r TagWeights) bool {
 	return true
 } // }}}
 
+// func TagsWeights.Combine {{{
+
+// Combines tags from two TagWeights and returns the combined result.
+//
+// Note this tries to combine the result into t, so this may (or may not) modifed t.
+//
+// Best result call with -
+//
+//  t = t.Combine(other)
+//
+// Similar to the way append() works.
+//
+// No need to run Fix() on the result.
+//
+// Note that the value being combined overrides any existing weight.
+// 
+// So the result of TagWeight{1, 10} combined with TagWeight{1, -10} the result would be TagWeight{1, -10}.
+func (t TagWeights) Combine(r TagWeights) TagWeights {
+	var newTW TagWeights
+
+	// This logic is similar to Contains(), it runs through both lists from left to right, except that
+	// each missing weight it adds that to a temporary array before finally adding the missing ones to the input.
+	//
+	// Now if t has no weights, just return r.
+	if len(t) == 0 {
+		return r
+	}
+
+	// And if add has no weights, just return t.
+	if len(r) == 0 {
+		return t
+	}
+
+	// We are going to be comparing the two left to right.
+	//
+	// We start at the first value of each then move forward.
+	lftLoc := 0
+	rgtLoc := 0
+
+	// Now we start going left to right, through the provied tags moving our
+	// location forward each time after a comparision between the given two locations.
+	for {
+		// If either location goes over our lengths then the loop is done.
+		if lftLoc >= len(t) || rgtLoc >= len(r) {
+			break
+		}
+
+		// Is the left greater then the right?
+		if t[lftLoc].Tag > r[rgtLoc].Tag {
+			// A weight that left doesn't have, so add it.
+			newTW = append(newTW, r[rgtLoc])
+			rgtLoc++
+			continue
+		}
+
+		// Is the right greater then the left?
+		if r[rgtLoc].Tag > t[lftLoc].Tag {
+			// Right has jumped ahead of left, so move left forward.
+			lftLoc++
+			continue
+		}
+
+		// If we are here then both left and right are pointing to the same tag, so copy the weight given by right.
+		t[lftLoc].Weight = r[rgtLoc].Weight
+
+		// Now move both forward.
+		lftLoc++
+		rgtLoc++
+	}
+
+	// Does right have any additional tags in right that were not seen?
+	if len(r) > rgtLoc {
+		newTW = append(newTW, r[rgtLoc:]...)
+	}
+
+	// Now if any new tags were found, add them.
+	if len(newTW) > 0 {
+		t = append(t, newTW...)
+		t = t.Fix()
+	}
+
+	// Return the new weights
+	return t
+} // }}}
+
 // func MakeTagRule {{{
 
 // Creates a TagRule from a given list of Any, All and None tags.
@@ -537,6 +622,12 @@ func (trs TagRules) Equal(co TagRules) bool {
 //  trs = trs.Combine(other)
 //
 // Similar to the way append() works, the rules from other are appended after the original trs rules.
+//
+// Note that this *does not* remove duplicates.
+// Duplicate rules are allowed and this makes no attempts to combine duplicates as the actual tags in the rules
+// can be very different.
+//
+// If you wish to combine duplicate TagRule, you can use TagRule.Combine to manually combine them.
 func (trs TagRules) Combine(co TagRules) TagRules {
 	// This is actually a fairly simple append here.
 	for _, otr := range co {
@@ -667,4 +758,95 @@ func (tr *TagRule) Give(t Tags) bool {
 
 	// Nothing matched.
 	return false
+} // }}}
+
+// func TagRule.Combine {{{
+
+// This combines the Any, All and None tags from the r TagRule into tr.
+//
+// Unlike other Combine() functions as its passed in a pointer to a struct this does not return anything,
+// just modifies tr directly.
+// 
+// The tr.Tag is ignored and not compared as this is meant to only combine the three above.
+//
+// Note that the value being combined overrides any existing flags.
+//
+// So if a TagRule with a Tag 1 of "Any" is asked to combine with a Tag 1 of "None", Tag 1 becomes "None".
+func (tr *TagRule) Combine(r *TagRule) {
+	var ntr trTags
+
+	if len(tr.trTags) == 0 {
+		// tr has no tags itself, so just copy everything from r, ignoring tr.Tag
+		tr.trTags = r.trTags
+		tr.hasAny = r.hasAny
+		tr.hasAll = r.hasAll
+		tr.hasNone = r.hasNone
+		return
+	}
+
+	// If r has no trTags then we just return.
+	if len(r.trTags) == 0 {
+		return
+	}
+
+	// Same logic as most of the functions here, left and right.
+	lftLoc := 0
+	rgtLoc := 0
+
+	for {
+		// If either location goes over our lengths then the loop is done.
+		if lftLoc >= len(tr.trTags) || rgtLoc >= len(r.trTags) {
+			break
+		}
+
+		// Is the left greater then the right?
+		if tr.trTags[lftLoc].tag > r.trTags[rgtLoc].tag {
+			// A tag that left doesn't have, so add it.
+			ntr = append(ntr, r.trTags[rgtLoc])
+			rgtLoc++
+			continue
+		}
+
+		// Is the right greater then the left?
+		if r.trTags[rgtLoc].tag > tr.trTags[lftLoc].tag {
+			// Right has jumped ahead of left, so move left forward.
+			lftLoc++
+			continue
+		}
+
+		// If we are here then both left and right are pointing to the same tag, so copy the flag given by right.
+		tr.trTags[lftLoc].flag = r.trTags[rgtLoc].flag
+
+		// Now move both forward.
+		lftLoc++
+		rgtLoc++
+	}
+
+	// Does right have any additional tags in right that were not seen?
+	if len(r.trTags) > rgtLoc {
+		ntr = append(ntr, r.trTags[rgtLoc:]...)
+	}
+
+	// Now if any new tags were found, add them.
+	if len(ntr) > 0 {
+		tr.trTags = append(tr.trTags, ntr...)
+		tr.trTags.Sort()
+	}
+
+	// Reset the flags
+	tr.hasAny = false
+	tr.hasAll = false
+	tr.hasNone = false
+
+	// Iterate through trTags and update the flags.
+	for _, trt := range tr.trTags {
+		switch trt.flag {
+		case trfAny:
+			tr.hasAny = true
+		case trfAll:
+			tr.hasAll = true
+		case trfNone:
+			tr.hasNone = true
+		}
+	}
 } // }}}
