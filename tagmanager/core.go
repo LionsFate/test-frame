@@ -40,6 +40,9 @@ type TagManager struct {
 	// Do not access directly, use atomics.
 	closed uint32
 
+	// Lets us know to shutdown.
+	ctx context.Context
+
 	co *conf
 } // }}}
 
@@ -47,16 +50,15 @@ var ycCallers = yconf.Callers{
 	Empty: func() interface{} { return &conf{} },
 }
 
-var bg = context.Background()
-
 // func New {{{
 
-func New(confFile string, l *zerolog.Logger) (*TagManager, error) {
+func New(confFile string, l *zerolog.Logger, ctx context.Context) (*TagManager, error) {
 	var err error
 
 	tm := &TagManager{
 		l:     l.With().Str("mod", "tagmanager").Logger(),
 		cFile: confFile,
+		ctx:   ctx,
 	}
 
 	fl := tm.l.With().Str("func", "New").Logger()
@@ -70,6 +72,12 @@ func New(confFile string, l *zerolog.Logger) (*TagManager, error) {
 		fl.Err(err).Msg("Connect")
 		return nil, err
 	}
+
+	// Background goroutine to watch the context and shut us down.
+	go func() {
+		<-tm.ctx.Done()
+		tm.close()
+	}()
 
 	return tm, nil
 } // }}}
@@ -103,7 +111,7 @@ func (tm *TagManager) dbConnect(uri string) error {
 		return nil
 	}
 
-	if db, err = pgxpool.ConnectConfig(bg, poolConf); err != nil {
+	if db, err = pgxpool.ConnectConfig(tm.ctx, poolConf); err != nil {
 		return err
 	}
 
@@ -145,7 +153,7 @@ func (tm *TagManager) getDB() (*pgxpool.Pool, error) {
 func (tm *TagManager) loadConf() error {
 	fl := tm.l.With().Str("func", "loadConf").Logger()
 
-	yc, err := yconf.New(tm.cFile, ycCallers, &tm.l)
+	yc, err := yconf.New(tm.cFile, ycCallers, &tm.l, tm.ctx)
 	if err != nil {
 		fl.Err(err).Msg("yconf.New")
 		return err
@@ -172,11 +180,11 @@ func (tm *TagManager) loadConf() error {
 	return nil
 } // }}}
 
-// func TagManager.Close {{{
+// func TagManager.close {{{
 
 // Stops all background processing and disconnects from the database.
-func (tm *TagManager) Close() {
-	fl := tm.l.With().Str("func", "Stop").Logger()
+func (tm *TagManager) close() {
+	fl := tm.l.With().Str("func", "close").Logger()
 
 	// Set closed
 	if !atomic.CompareAndSwapUint32(&tm.closed, 0, 1) {
@@ -226,7 +234,7 @@ func (tm *TagManager) Name(in uint64) (string, error) {
 		return "", err
 	}
 
-	if err := db.QueryRow(bg, "GetName", in).Scan(&name); err != nil {
+	if err := db.QueryRow(tm.ctx, "GetName", in).Scan(&name); err != nil {
 		fl.Err(err).Msg("GetName")
 		return "", err
 	}
@@ -272,7 +280,7 @@ func (tm *TagManager) Get(in string) (uint64, error) {
 		return 0, err
 	}
 
-	if err := db.QueryRow(bg, "GetID", in).Scan(&id); err != nil {
+	if err := db.QueryRow(tm.ctx, "GetID", in).Scan(&id); err != nil {
 		fl.Err(err).Msg("GetID")
 		return 0, err
 	}

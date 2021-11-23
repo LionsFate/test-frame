@@ -2,6 +2,7 @@
 package yconf
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"github.com/rs/zerolog"
@@ -22,11 +23,11 @@ import (
 // If you only want to manually check the configuration, use CheckConfig().
 //
 // To know when loading has finished in the background ensure you have Callers.Notify set.
-func New(confPath string, ca Callers, l *zerolog.Logger) (*YConf, error) {
+func New(confPath string, ca Callers, l *zerolog.Logger, ctx context.Context) (*YConf, error) {
 	yc := &YConf{
 		confPath: confPath,
 		ca:       ca,
-		bye:      make(chan struct{}, 0),
+		ctx:      ctx,
 
 		// So we never have a situation where lo is nil
 		lo: &loaded{},
@@ -64,16 +65,12 @@ func (yc *YConf) Start() error {
 	return nil
 } // }}}
 
-// func YConf.Stop {{{
+// func YConf.close {{{
 
 // This shuts down Conf and any background goroutines running.
-//
-// Should only be called if you have called Start() prior.
-func (yc *YConf) Stop() {
-	close(yc.bye)
-
-	fl := yc.l.With().Str("func", "Stop").Logger()
-	fl.Debug().Msg("Stopped")
+func (yc *YConf) close() {
+	fl := yc.l.With().Str("func", "close").Logger()
+	fl.Info().Msg("closed")
 } // }}}
 
 // func YConf.isLoadedEqual {{{
@@ -446,6 +443,7 @@ func (yc *YConf) isConf(name string) bool {
 // Handles automatic checking for new or changed configuration files.
 func (yc *YConf) loopy() {
 	fl := yc.l.With().Str("func", "loopy").Logger()
+	ctx := yc.ctx
 
 	// Basic tracking ticker, runs every minute.
 	tick := time.NewTicker(time.Minute)
@@ -456,9 +454,9 @@ func (yc *YConf) loopy() {
 		case <-tick.C:
 			fl.Debug().Msg("tick")
 			yc.CheckConf()
-		case _, ok := <-yc.bye:
+		case _, ok := <-ctx.Done():
 			if !ok {
-				fl.Debug().Msg("Shutting down")
+				yc.close()
 				return
 			}
 		}

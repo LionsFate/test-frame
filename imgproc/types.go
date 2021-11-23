@@ -1,6 +1,7 @@
 package imgproc
 
 import (
+	"context"
 	"frame/tags"
 	"frame/types"
 	"frame/yconf"
@@ -127,7 +128,7 @@ type ImageProc struct {
 	closed uint32
 
 	// Used to control shutting down background goroutines.
-	bye chan struct{}
+	ctx context.Context
 } // }}}
 
 // const conf update bits {{{

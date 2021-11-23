@@ -522,21 +522,21 @@ func (ip *ImageProc) checkConf(co *conf, reload bool) (bool, uint64) {
 		dbConf.LogLevel = pgx.LogLevelInfo
 		dbConf.Logger = zerologadapter.NewLogger(ip.l)
 
-		db, err := pgx.ConnectConfig(bg, dbConf)
+		db, err := pgx.ConnectConfig(ip.ctx, dbConf)
 		if err != nil {
 			fl.Err(err).Msg("db conn test")
 			return false, ucBits
 		}
 
 		// Ok, disconnect now that we know that works.
-		if err = db.Ping(bg); err != nil {
+		if err = db.Ping(ip.ctx); err != nil {
 			fl.Err(err).Msg("db ping test")
-			db.Close(bg)
+			db.Close(ip.ctx)
 			return false, ucBits
 		}
 
 		// Disconnect our test
-		db.Close(bg)
+		db.Close(ip.ctx)
 	}
 
 	return true, ucBits
@@ -561,7 +561,7 @@ func (ip *ImageProc) loadConf() error {
 		return ip.yconfConvert(in)
 	}
 
-	if ip.yc, err = yconf.New(ip.cPath, ycc, &ip.l); err != nil {
+	if ip.yc, err = yconf.New(ip.cPath, ycc, &ip.l, ip.ctx); err != nil {
 		fl.Err(err).Msg("yconf.New")
 		return err
 	}

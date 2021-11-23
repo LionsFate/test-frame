@@ -126,11 +126,11 @@ func TestTagRules(t *testing.T) {
 	trs := mtr(ConfTagRules{
 		ConfTagRule{
 			Tag: "tr_one",
-			Any:  []string{ "one", "two", "five", "seven" },
+			Any: []string{"one", "two", "five", "seven"},
 		},
 		ConfTagRule{
-			Tag: "tr_two",
-			None: []string{ "tr_one" },
+			Tag:  "tr_two",
+			None: []string{"tr_one"},
 		},
 	})
 
@@ -139,7 +139,7 @@ func TestTagRules(t *testing.T) {
 	if !tgs.Has(get("tr_one")) {
 		t.Fatalf("Missing tr_one")
 	}
-	
+
 } // }}}
 
 // func TestTagRuleA {{{
@@ -157,7 +157,7 @@ func TestTagRuleA(t *testing.T) {
 
 	// Lets say a basic rule, immediate family only.
 	trc := &ConfTagRule{
-		Tag: "immediate",
+		Tag:  "immediate",
 		Any:  []string{"brother", "sister", "mother", "father"},
 		None: []string{"uncle", "aunt"},
 	}

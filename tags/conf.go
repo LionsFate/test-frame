@@ -1,10 +1,10 @@
 package tags
 
 import (
-	"sort"
-	"sync"
-	"strings"
 	"errors"
+	"sort"
+	"strings"
+	"sync"
 )
 
 // This contains all the functions and types needed to load tags from a YAML/JSON configuration file.
@@ -35,7 +35,7 @@ import (
 //       - brother 2
 //       - sister 1
 //       - sister 2
-//  
+//
 // And a tag that ensures the group only is that group, removing all possible spouces -
 //
 //   tagrule:
@@ -54,10 +54,10 @@ import (
 //
 // Multiple tag rules can give the same tag.
 type ConfTagRule struct {
-	Tag     string   `yaml:"tag" json:"tag"`
-	Any     []string `yaml:"any" json:"any"`
-	All     []string `yaml:"all" json:"all"`
-	None    []string `yaml:"none" json:"none"`
+	Tag  string   `yaml:"tag" json:"tag"`
+	Any  []string `yaml:"any" json:"any"`
+	All  []string `yaml:"all" json:"all"`
+	None []string `yaml:"none" json:"none"`
 } // }}}
 
 type ConfTagRules []ConfTagRule
@@ -193,10 +193,9 @@ func StringsToTags(in []string, tm TagManager) (Tags, error) {
 	return out, nil
 } // }}}
 
-
 type TestTM struct {
-	tMut sync.Mutex
-	tags map[string]uint64
+	tMut   sync.Mutex
+	tags   map[string]uint64
 	lastID uint64
 }
 
@@ -235,4 +234,3 @@ func (tm *TestTM) Get(in string) (uint64, error) {
 
 	return id, nil
 } // }}}
-

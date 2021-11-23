@@ -446,7 +446,7 @@ func (tw TagWeights) Equal(r TagWeights) bool {
 // No need to run Fix() on the result.
 //
 // Note that the value being combined overrides any existing weight.
-// 
+//
 // So the result of TagWeight{1, 10} combined with TagWeight{1, -10} the result would be TagWeight{1, -10}.
 func (t TagWeights) Combine(r TagWeights) TagWeights {
 	var newTW TagWeights
@@ -568,6 +568,31 @@ func MakeTagRule(give uint64, any, all, none Tags) (TagRule, error) {
 	}, nil
 } // }}}
 
+// func TagRule.Equal {{{
+
+func (tr TagRule) Equal(co TagRule) bool {
+	if tr.Tag != co.Tag {
+		return false
+	}
+
+	if tr.hasAny != co.hasAny || tr.hasAll != co.hasAll || tr.hasNone != co.hasNone {
+		return false
+	}
+
+	// Now the individual tags
+	if len(tr.trTags) != len(co.trTags) {
+		return false
+	}
+
+	for j := 0; j < len(tr.trTags); j++ {
+		if tr.trTags[j] != co.trTags[j] {
+			return false
+		}
+	}
+
+	return true
+} // }}}
+
 // func TagRules.Equal {{{
 
 // Returns true if both TagRules are exactly the same.
@@ -584,26 +609,8 @@ func (trs TagRules) Equal(co TagRules) bool {
 
 	// Now iterate the rules and check directly.
 	for i := 0; i < len(trs); i++ {
-		lft := trs[i]
-		rht := co[i]
-
-		if lft.Tag != rht.Tag {
+		if !trs[i].Equal(co[i]) {
 			return false
-		}
-
-		if lft.hasAny != rht.hasAny || lft.hasAll != rht.hasAll || lft.hasNone != rht.hasNone {
-			return false
-		}
-
-		// Now the individual tags
-		if len(lft.trTags) != len(rht.trTags) {
-			return false
-		}
-
-		for j := 0; j < len(lft.trTags); j++ {
-			if lft.trTags[j] != rht.trTags[j] {
-				return false
-			}
 		}
 	}
 
@@ -766,7 +773,7 @@ func (tr *TagRule) Give(t Tags) bool {
 //
 // Unlike other Combine() functions as its passed in a pointer to a struct this does not return anything,
 // just modifies tr directly.
-// 
+//
 // The tr.Tag is ignored and not compared as this is meant to only combine the three above.
 //
 // Note that the value being combined overrides any existing flags.

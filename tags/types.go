@@ -37,7 +37,7 @@ const (
 
 type TagRule struct {
 	// The tag to give if this rule applies.
-	Tag    uint64
+	Tag uint64
 
 	// The actual tags to match against to see if this rule applies or not.
 	trTags trTags
