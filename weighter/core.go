@@ -15,8 +15,6 @@ import (
 	"time"
 )
 
-var bg = context.Background()
-
 // func yconfMerge {{{
 
 func yconfMerge(inAInt, inBInt interface{}) (interface{}, error) {
@@ -116,19 +114,38 @@ func yconfChanged(origConfInt, newConfInt interface{}) bool {
 		return true
 	}
 
+	if len(origConf.Profiles) != len(newConf.Profiles) {
+		return true
+	}
+
+	for name, oProf := range origConf.Profiles {
+		nProf, ok := newConf.Profiles[name]
+		if !ok {
+			return true
+		}
+
+		if !oProf.Weights.Equal(nProf.Weights) {
+			return true
+		}
+
+		if !oProf.Matches.Equal(nProf.Matches) {
+			return true
+		}
+	}
+
 	return false
 } // }}}
 
 // func New {{{
 
-func New(confPath string, tm types.TagManager, l *zerolog.Logger) (*Weighter, error) {
+func New(confPath string, tm types.TagManager, l *zerolog.Logger, ctx context.Context) (*Weighter, error) {
 	var err error
 
 	we := &Weighter{
 		l:     l.With().Str("mod", "weighter").Logger(),
 		tm:    tm,
 		cPath: confPath,
-		bye:   make(chan struct{}, 0),
+		ctx:   ctx,
 
 		// Do not create the hashes, we only add ca here for the mutex.
 		// The hashes is created in doFull()
@@ -141,6 +158,11 @@ func New(confPath string, tm types.TagManager, l *zerolog.Logger) (*Weighter, er
 	//
 	// This also handles connecting to the database.
 	if err = we.loadConf(); err != nil {
+		return nil, err
+	}
+
+	// Now run the initial doFull() and ensure things are OK.
+	if err := we.doFull(); err != nil {
 		return nil, err
 	}
 
@@ -167,18 +189,130 @@ func (we *Weighter) doPoll() error {
 		return err
 	}
 
+	// XXX TODO Yeah, does nothing right now. Mooga.
 	return nil
 
 } // }}}
 
 // func Weighter.makeProfileWeights {{{
 
-func (we *Weighter) makeProfileWeights() error {
+// XXX TODO Totally untested, eh?
+func (we *Weighter) makeProfileWeights(ca *cache) error {
+	var weight int
+
 	fl := we.l.With().Str("func", "makeProfileWeights").Logger()
+
+	co := we.getConf()
+
+	// Basic sanity - No profiles, nothing we can actually do.
+	if len(co.Profiles) < 1 {
+		fl.Warn().Msg("No profiles")
+		return errors.New("No profiles")
+	}
+
+	// We need a temporary profile map to store the weights we are figuring out.
+	tpMap := make(map[string]map[int][]uint64, len(co.Profiles))
+
+	// Create each profiles temporary weights map
+	for pName, _ := range co.Profiles {
+		tpMap[pName] = make(map[int][]uint64, 100)
+	}
+
+	// We tend to have far less profiles vs. images, so lets just iterate through
+	// the images only 1 time, checking each profile as we go through the images.
+	for id, ci := range ca.images {
+		for pName, prof := range co.Profiles {
+			// If it doesn't match what the profile wants, skip it.
+			if !prof.Matches.Give(ci.Tags) {
+				continue
+			}
+
+			// Ok, matches - What weight will it be given?
+			weight = prof.Weights.GetWeight(ci.Tags)
+			if weight < 1 {
+				// A negative weight means skip it.
+				continue
+			}
+
+			// Ok, we have a positive weight, so go ahead and add this image to tpMap
+			tpMap[pName][weight] = append(tpMap[pName][weight], id)
+		}
+	}
+
+	// Ok, so now we are setting the profiles in cache.
+	// We need the lock for this.
+	ca.pMut.Lock()
+	defer ca.pMut.Unlock()
+
+	// Go through each profile with at least 1 image in tpMap and add it properly to the cache.
+	for pName, weightMap := range tpMap {
+		start := 0
+		ncp := &cacheProfile{
+			Profile: pName,
+		}
+
+		ncp.Weights = make([]*weightList, 0, len(weightMap))
+
+		// Now run through the weights.
+		for weight, ids := range weightMap {
+			wl := &weightList{
+				Weight: weight,
+				Start: start,
+				IDs: ids,
+			}
+
+			ncp.Weights = append(ncp.Weights, wl)
+
+			// The starting weight for the next
+			start += weight
+
+			// Adjust the maximum weight to roll
+			ncp.MaxRoll = start
+		}
+	}
 
 	fl.Debug().Send()
 
 	return nil
+} // }}}
+
+// func Weighter.makeWhitelist {{{
+
+// Makes Weighter.white, a list of all tags that we care about for filtering out images
+// that can never show up so can be dropped from being tracked.
+func (we *Weighter) makeWhitelist() {
+	fl := we.l.With().Str("func", "makeWhitelist").Logger()
+
+	fl.Debug().Send()
+
+	// Get our new configuration.
+	co := we.getConf()
+
+	// A temporary map to handle duplicate issues for us.
+	tmap := make(map[uint64]int, 1)
+
+	// Iterate the profiles.
+	for _, prof := range co.Profiles {
+		// We only care about the weights - As it needs a positive weight to be able to be displayed.
+		for _, tw := range prof.Weights {
+			tmap[tw.Tag] = 1
+		}
+	}
+
+	// We now have a unique list of all the tags we care about, so create the new tags.Tags for it.
+	//
+	// We make the capacity the length so we an just append and not worry about the index we are at.
+	tgs := make(tags.Tags, 0, len(tmap))
+
+	for k, _ := range tmap {
+		tgs = append(tgs, k)
+	}
+
+	// This handles sorting for us.
+	tgs = tgs.Fix()
+
+	// And now we set the whitelist, replacing any previously existing one.
+	we.white.Store(tgs)
 } // }}}
 
 // func Weighter.doFull {{{
@@ -187,13 +321,26 @@ func (we *Weighter) makeProfileWeights() error {
 //
 // This is done at startup, periodically if configured to do so, as well as in the event of changes to the profiles.
 func (we *Weighter) doFull() error {
+	// Get the cache
+	ca := we.ca
+
+	// Need the whitelist before we do the full query.
+	we.makeWhitelist()
+
+	// We need a write lock on the images map.
+	//
+	// Note that the images map is only used by queries and when generating profiles, not when asking for profile matches.
+	// So its safe to aquire this lock without worry about us stalling the Weighter.
+	ca.imgMut.Lock()
+	defer ca.imgMut.Unlock()
+
 	// First is the full query.
-	if err := we.fullQuery(); err != nil {
+	if err := we.fullQuery(ca); err != nil {
 		return err
 	}
 
 	// Now generate the profiles from all the images loaded.
-	if err := we.makeProfileWeights(); err != nil {
+	if err := we.makeProfileWeights(ca); err != nil {
 		return err
 	}
 
@@ -218,7 +365,7 @@ func (we *Weighter) pollQuery() error {
 	}
 
 	// The query should already be prepared at connection.
-	pollRows, err := db.Query(bg, "poll")
+	pollRows, err := db.Query(we.ctx, "poll")
 	if err != nil {
 		fl.Err(err).Msg("poll")
 		return err
@@ -302,28 +449,22 @@ func (we *Weighter) pollQuery() error {
 
 // func Weighter.fullQuery {{{
 
-func (we *Weighter) fullQuery() error {
+func (we *Weighter) fullQuery(ca *cache) error {
 	var first bool
-	var id uint64
+	var id, skipped uint64
 	var hash string
 	var tgs tags.Tags
 
 	fl := we.l.With().Str("func", "fullQuery").Logger()
+
+	// Get the whitelist to filter out images we don't care about.
+	wl := we.getWhite()
 
 	db, err := we.getDB()
 	if err != nil {
 		fl.Err(err).Msg("getDB")
 		return err
 	}
-	// Get the cache
-	ca := we.ca
-
-	// We need a write lock on the images map.
-	//
-	// Note that the images map is only used by queries and when generating profiles, not when asking for profile matches.
-	// So its safe to aquire this lock without worry about us stalling the Weighter.
-	ca.imgMut.Lock()
-	defer ca.imgMut.Unlock()
 
 	// Change seen
 	ca.seen += 1
@@ -336,7 +477,7 @@ func (we *Weighter) fullQuery() error {
 	}
 
 	// The query should already be prepared at connection.
-	fullRows, err := db.Query(bg, "full")
+	fullRows, err := db.Query(we.ctx, "full")
 	if err != nil {
 		fl.Err(err).Msg("full")
 		return err
@@ -353,6 +494,13 @@ func (we *Weighter) fullQuery() error {
 		// Don't assume the database doesn't have duplicates and is sorted properly.
 		tgs = tgs.Fix()
 
+		// Does this contain at least 1 tag that we care about?
+		if !tgs.Contains(wl) {
+			skipped++
+			// Nope, skip this image.
+			continue
+		}
+
 		// Does this hash already exist?
 		img, ok := ca.images[id]
 		if !ok {
@@ -360,7 +508,7 @@ func (we *Weighter) fullQuery() error {
 			img = &cacheImage{
 				ID:   id,
 				Hash: hash,
-				Tags: tgs.Fix(),
+				Tags: tgs,
 				changed: true,
 				seen: ca.seen,
 			}
@@ -422,7 +570,7 @@ func (we *Weighter) loadConf() error {
 		return we.yconfConvert(in)
 	}
 
-	if we.yc, err = yconf.New(we.cPath, ycc, &we.l); err != nil {
+	if we.yc, err = yconf.New(we.cPath, ycc, &we.l, we.ctx); err != nil {
 		fl.Err(err).Msg("yconf.New")
 		return err
 	}
@@ -542,12 +690,19 @@ func (we *Weighter) yconfConvert(inInt interface{}) (interface{}, error) {
 		}
 	}
 
+	// Make the Profiles map if we need it.
+	if len(in.Profiles) > 0 {
+		out.Profiles = make(map[string]*confProfile, len(in.Profiles))
+	}
+
 	// The profiles.
 	for name, cProf := range in.Profiles {
 		// The Any, All and None we want to convert into a TagRule with the "Tag" given being the profile name.
 		// Note that we will never actually assign this tag, just used for matching.
 		ctr := tags.ConfTagRule{
-			Tag: name,
+			// The name doesn't matter since we never use this to assign any tags, so we just call it "nat" (or Not A Tag).
+			// This way each profile doesn't end up being a new tag name in TagManager.
+			Tag: "nat",
 			Any: cProf.Any,
 			All: cProf.All,
 			None: cProf.None,
@@ -569,6 +724,9 @@ func (we *Weighter) yconfConvert(inInt interface{}) (interface{}, error) {
 				return nil, err
 			}
 		}
+
+		// Add the new confProfile to our Profiles.
+		out.Profiles[name] = cp
 	}
 
 	// The various intervals.
@@ -625,6 +783,11 @@ func (we *Weighter) checkConf(co *conf, reload bool) (bool, uint64) {
 		return false, 0
 	}
 
+	if len(co.Profiles) < 1 {
+		fl.Warn().Msg("Need at least 1 profile")
+		return false, 0
+	}
+	
 	// If this isn't a reload, then nothing further to do.
 	if !reload {
 		return true, 0
@@ -657,6 +820,31 @@ func (we *Weighter) checkConf(co *conf, reload bool) (bool, uint64) {
 		ucBits |= ucFullInt
 	}
 
+	// Profile bits, these are a bit more involved but not horribly complex.
+	if len(co.Profiles) != len(oldco.Profiles) {
+		// Simple - The two have a different number of profiles.
+		ucBits |= ucProfiles
+	} else {
+		// Same number of profiles, so run through each and see if there is a difference.
+		for name, oProf := range co.Profiles {
+			nProf, ok := oldco.Profiles[name]
+			if !ok {
+				ucBits |= ucProfiles
+				break;
+			}
+
+			if !oProf.Weights.Equal(nProf.Weights) {
+				ucBits |= ucProfiles
+				break;
+			}
+
+			if !oProf.Matches.Equal(nProf.Matches) {
+				ucBits |= ucProfiles
+				break;
+			}
+		}
+	}
+
 	return true, ucBits
 } // }}}
 
@@ -687,7 +875,7 @@ func (we *Weighter) dbConnect(co *conf) error {
 		return nil
 	}
 
-	if db, err = pgxpool.ConnectConfig(bg, poolConf); err != nil {
+	if db, err = pgxpool.ConnectConfig(we.ctx, poolConf); err != nil {
 		return err
 	}
 
@@ -719,12 +907,12 @@ func (we *Weighter) setupDB(qu *confQueries, db *pgx.Conn) error {
 	}
 
 	// Lets prepare all our statements
-	if _, err := db.Prepare(bg, "full", qu.Full); err != nil {
+	if _, err := db.Prepare(we.ctx, "full", qu.Full); err != nil {
 		fl.Err(err).Msg("full")
 		return err
 	}
 
-	if _, err := db.Prepare(bg, "poll", qu.Poll); err != nil {
+	if _, err := db.Prepare(we.ctx, "poll", qu.Poll); err != nil {
 		fl.Err(err).Msg("poll")
 		return err
 	}
@@ -768,6 +956,22 @@ func (we *Weighter) getConf() *conf {
 	return &conf{}
 } // }}}
 
+// func Weighter.getWhite {{{
+
+func (we *Weighter) getWhite() tags.Tags {
+	fl := we.l.With().Str("func", "getWhite").Logger()
+
+	if wl, ok := we.white.Load().(tags.Tags); ok {
+		return wl
+	}
+
+	// This should really never be able to happen.
+	//
+	// If this does, then there is a deeper issue.
+	fl.Warn().Msg("Missing whitelist?")
+	return tags.Tags{}
+} // }}}
+
 // func Weighter.loopy {{{
 
 // Handles our basic background tasks, partial and full queries.
@@ -778,6 +982,8 @@ func (we *Weighter) loopy() {
 
 	// We need to know how often we poll.
 	co := we.getConf()
+
+	ctx := we.ctx
 
 	// Save the current PollInterval so we know if it changes.
 	pollInt := co.PollInterval
@@ -793,9 +999,9 @@ func (we *Weighter) loopy() {
 
 	for {
 		select {
-		case _, ok := <-we.bye:
+		case _, ok := <-ctx.Done():
 			if !ok {
-				fl.Debug().Msg("Shutting down")
+				we.close()
 				return
 			}
 		case <-nextPoll.C:
@@ -845,23 +1051,17 @@ func (we *Weighter) loopy() {
 	}
 } // }}}
 
-// func Weighter.Close {{{
+// func Weighter.close {{{
 
 // Stops all background processing and disconnects from the database.
-func (we *Weighter) Close() {
-	fl := we.l.With().Str("func", "Close").Logger()
+func (we *Weighter) close() {
+	fl := we.l.With().Str("func", "close").Logger()
 
 	// Set closed
 	if !atomic.CompareAndSwapUint32(&we.closed, 0, 1) {
 		fl.Info().Msg("already closed")
 		return
 	}
-
-	// Shutdown background goroutines
-	close(we.bye)
-
-	// Don't need to watch configuration anymore.
-	we.yc.Stop()
 
 	if db, err := we.getDB(); err == nil {
 		db.Close()

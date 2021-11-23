@@ -1,25 +1,21 @@
 package types
 
 import (
-	"frame/tags"
 	"errors"
+	"frame/tags"
 )
 
 var ErrShutdown = errors.New("Shutdown")
 
 // type TagManager interface {{{
 
+// To do any shutdown work a TagManager should be provided a proper context.Context.
 type TagManager interface {
 	// Lookup a tag id from its string name.
 	Get(string) (uint64, error)
 
 	// Reverse lookup a tag name from its id.
 	Name(uint64) (string, error)
-
-	// For shutting down the TagManager.
-	//
-	// Safe to call multiple times, but once called Get() will return ErrShutdown
-	Close()
 } // }}}
 
 // type Profile struct {{{
@@ -48,4 +44,3 @@ type Profile struct {
 	Exclude tags.Tags
 	Weights tags.TagWeights
 } // }}}
-

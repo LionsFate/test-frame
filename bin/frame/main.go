@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"frame/cmerge"
@@ -76,7 +77,8 @@ type frame struct {
 	cm      *cmerge.CMerge
 	curHour int32
 	yc      *yconf.YConf
-	bye     chan struct{}
+	ctx     context.Context
+	can     context.CancelFunc
 }
 
 // func emptyConf {{{
@@ -107,28 +109,13 @@ func (f *frame) Wait() {
 	signal.Stop(endSig)
 } // }}}
 
-// func frame.Close {{{
+// func frame.close {{{
 
-func (f *frame) Close() {
-	// Stop the log rotation goroutine.
-	close(f.bye)
+func (f *frame) close() {
+	// Signal it all to shutdown.
+	f.can()
 
 	f.l.Info().Msg("Shutting down")
-
-	// We can be called in the middle of startup, as well as with only certain modules loaded.
-	//
-	// Always nil check to know what we need to shutdown.
-	if f.ip != nil {
-		f.ip.Close()
-	}
-
-	if f.cm != nil {
-		f.cm.Close()
-	}
-
-	if f.tm != nil {
-		f.tm.Close()
-	}
 
 	// This time delay gives the above just a little more time to shutdown properly.
 	time.Sleep(300 * time.Millisecond)
@@ -145,8 +132,10 @@ func main() {
 	f := &frame{
 		// Set to an invalid hour to ensure it rotates the first time.
 		curHour: 50,
-		bye:     make(chan struct{}, 0),
 	}
+
+	// Get our shutdown context
+	f.ctx, f.can = context.WithCancel(context.Background())
 
 	// As this program is meant to start, run, and then stop - Not do anything in the background, we just use our own YAML configuration.
 	f.l = zerolog.New(os.Stdout).With().Timestamp().Logger()
@@ -159,7 +148,7 @@ func main() {
 		usage()
 	}
 
-	f.yc, err = yconf.New(f.cFile, pathsConf, &f.l)
+	f.yc, err = yconf.New(f.cFile, pathsConf, &f.l, f.ctx)
 	if err != nil {
 		f.l.Err(err).Msg("yconf.New")
 		os.Exit(-1)
@@ -200,32 +189,32 @@ func main() {
 	}
 
 	// Now we need the TagManager.
-	f.tm, err = tagmanager.New(f.co.TagManager, &f.l)
+	f.tm, err = tagmanager.New(f.co.TagManager, &f.l, f.ctx)
 	if err != nil {
 		f.l.Err(err).Msg("TagManager")
 		f.tm = nil
-		f.Close()
+		f.close()
 		os.Exit(-1)
 	}
 
 	// Do we load the ImageProc?
 	if f.co.ImageProc != "" {
 		// And next is our real core, the one doing all the real work here, ImageProc.
-		f.ip, err = imgproc.New(f.co.ImageProc, f.tm, &f.l)
+		f.ip, err = imgproc.New(f.co.ImageProc, f.tm, &f.l, f.ctx)
 		if err != nil {
 			f.ip = nil
 			f.l.Err(err).Msg("ImageProc")
-			f.Close()
+			f.close()
 			os.Exit(-1)
 		}
 	}
 
 	if f.co.CacheMerge != "" {
-		f.cm, err = cmerge.New(f.co.CacheMerge, f.tm, &f.l)
+		f.cm, err = cmerge.New(f.co.CacheMerge, f.tm, &f.l, f.ctx)
 		if err != nil {
 			f.cm = nil
 			f.l.Err(err).Msg("CMerge")
-			f.Close()
+			f.close()
 			os.Exit(-1)
 		}
 	}
@@ -236,7 +225,7 @@ func main() {
 	f.Wait()
 
 	f.l.Info().Msg("Shutting down")
-	f.Close()
+	f.close()
 } // }}}
 
 // func frame.logLoopy {{{
@@ -250,6 +239,8 @@ func (f *frame) logLoopy() {
 	// Basic tracking ticker, runs every minute.
 	tick := time.NewTicker(time.Minute)
 	defer tick.Stop()
+
+	ctx := f.ctx
 
 	for {
 		select {
@@ -267,7 +258,7 @@ func (f *frame) logLoopy() {
 					f.l.Err(err).Msg("rotate")
 				}
 			}
-		case _, ok := <-f.bye:
+		case _, ok := <-ctx.Done():
 			if !ok {
 				return
 			}

@@ -15,8 +15,6 @@ import (
 	"time"
 )
 
-var bg = context.Background()
-
 // func yconfMerge {{{
 
 func yconfMerge(inAInt, inBInt interface{}) (interface{}, error) {
@@ -145,14 +143,14 @@ func yconfChanged(origConfInt, newConfInt interface{}) bool {
 
 // func New {{{
 
-func New(confPath string, tm types.TagManager, l *zerolog.Logger) (*CMerge, error) {
+func New(confPath string, tm types.TagManager, l *zerolog.Logger, ctx context.Context) (*CMerge, error) {
 	var err error
 
 	cm := &CMerge{
 		l:     l.With().Str("mod", "cmerge").Logger(),
 		tm:    tm,
 		cPath: confPath,
-		bye:   make(chan struct{}, 0),
+		ctx:   ctx,
 
 		// Do not create the hashes, we only add ca here for the mutex.
 		// The hashes is created in doFull()
@@ -209,7 +207,7 @@ func (cm *CMerge) doPoll() error {
 	}
 
 	// Start a transaction.
-	tx, err := db.Begin(bg)
+	tx, err := db.Begin(cm.ctx)
 	if err != nil {
 		fl.Err(err).Msg("Begin")
 		return err
@@ -217,11 +215,11 @@ func (cm *CMerge) doPoll() error {
 
 	if err := cm.pollMerge(tx); err != nil {
 		fl.Err(err).Msg("pollMerge")
-		tx.Rollback(bg)
+		tx.Rollback(cm.ctx)
 		return err
 	}
 
-	if err := tx.Commit(bg); err != nil {
+	if err := tx.Commit(cm.ctx); err != nil {
 		fl.Err(err).Msg("commit")
 		return err
 	}
@@ -264,7 +262,7 @@ func (cm *CMerge) doFull() error {
 	}
 
 	// Start a transaction.
-	tx, err := db.Begin(bg)
+	tx, err := db.Begin(cm.ctx)
 	if err != nil {
 		fl.Err(err).Msg("Begin")
 		return err
@@ -276,7 +274,7 @@ func (cm *CMerge) doFull() error {
 		return err
 	}
 
-	if err := tx.Commit(bg); err != nil {
+	if err := tx.Commit(cm.ctx); err != nil {
 		fl.Err(err).Msg("commit")
 		return err
 	}
@@ -302,7 +300,7 @@ func (cm *CMerge) selectMerged() error {
 	}
 
 	// The full query should already be prepared at connection.
-	fullRows, err := db.Query(bg, "select")
+	fullRows, err := db.Query(cm.ctx, "select")
 	if err != nil {
 		fl.Err(err).Msg("select")
 		return err
@@ -361,7 +359,7 @@ func (cm *CMerge) pollQuery() error {
 	}
 
 	// The query should already be prepared at connection.
-	pollRows, err := db.Query(bg, "poll")
+	pollRows, err := db.Query(cm.ctx, "poll")
 	if err != nil {
 		fl.Err(err).Msg("poll")
 		return err
@@ -488,7 +486,7 @@ func (cm *CMerge) fullQuery() error {
 	}
 
 	// The query should already be prepared at connection.
-	fullRows, err := db.Query(bg, "full")
+	fullRows, err := db.Query(cm.ctx, "full")
 	if err != nil {
 		fl.Err(err).Msg("full")
 		return err
@@ -641,7 +639,7 @@ func (cm *CMerge) pushHash(hc *hashCache, tx pgx.Tx) error {
 			return err
 		}
 
-		if _, err := tx.Exec(bg, "disable", hc.ID); err != nil {
+		if _, err := tx.Exec(cm.ctx, "disable", hc.ID); err != nil {
 			fl.Err(err).Uint64("id", hc.ID).Msg("disable")
 			return err
 		}
@@ -655,7 +653,7 @@ func (cm *CMerge) pushHash(hc *hashCache, tx pgx.Tx) error {
 	if hc.ID != 0 {
 		// Yep, just apply the changes to the id.
 		// UPDATE files.merged SET tags = $1, blocked = $2 WHERE mid = $3
-		if _, err := tx.Exec(bg, "update", hc.Tags, hc.Blocked, hc.ID); err != nil {
+		if _, err := tx.Exec(cm.ctx, "update", hc.Tags, hc.Blocked, hc.ID); err != nil {
 			fl.Err(err).Uint64("id", hc.ID).Msg("update")
 			return err
 		}
@@ -667,7 +665,7 @@ func (cm *CMerge) pushHash(hc *hashCache, tx pgx.Tx) error {
 
 	// New row, so insert it.
 	// INSERT INTO files.mergeed ( hash, tags, blocked ) VALUES ( $1, $2, $3 ) ON CONFLICT ON CONSTRAINT "merged_hash_key" DO UPDATE SET tags = EXCLUDED.tags, blocked = EXCLUDED.blocked, enabled = true RETURNING mid
-	if err := tx.QueryRow(bg, "insert", hc.Hash, hc.Tags, hc.Blocked).Scan(&hc.ID); err != nil {
+	if err := tx.QueryRow(cm.ctx, "insert", hc.Hash, hc.Tags, hc.Blocked).Scan(&hc.ID); err != nil {
 		fl.Err(err).Uint64("id", hc.ID).Msg("insert")
 		return err
 	}
@@ -864,7 +862,7 @@ func (cm *CMerge) loadConf() error {
 		return cm.yconfConvert(in)
 	}
 
-	if cm.yc, err = yconf.New(cm.cPath, ycc, &cm.l); err != nil {
+	if cm.yc, err = yconf.New(cm.cPath, ycc, &cm.l, cm.ctx); err != nil {
 		fl.Err(err).Msg("yconf.New")
 		return err
 	}
@@ -1039,7 +1037,7 @@ func (cm *CMerge) dbConnect(co *conf) error {
 		return nil
 	}
 
-	if db, err = pgxpool.ConnectConfig(bg, poolConf); err != nil {
+	if db, err = pgxpool.ConnectConfig(cm.ctx, poolConf); err != nil {
 		return err
 	}
 
@@ -1071,32 +1069,32 @@ func (cm *CMerge) setupDB(qu *confQueries, db *pgx.Conn) error {
 	}
 
 	// Lets prepare all our statements
-	if _, err := db.Prepare(bg, "full", qu.Full); err != nil {
+	if _, err := db.Prepare(cm.ctx, "full", qu.Full); err != nil {
 		fl.Err(err).Msg("full")
 		return err
 	}
 
-	if _, err := db.Prepare(bg, "poll", qu.Poll); err != nil {
+	if _, err := db.Prepare(cm.ctx, "poll", qu.Poll); err != nil {
 		fl.Err(err).Msg("poll")
 		return err
 	}
 
-	if _, err := db.Prepare(bg, "select", qu.Select); err != nil {
+	if _, err := db.Prepare(cm.ctx, "select", qu.Select); err != nil {
 		fl.Err(err).Msg("select")
 		return err
 	}
 
-	if _, err := db.Prepare(bg, "insert", qu.Insert); err != nil {
+	if _, err := db.Prepare(cm.ctx, "insert", qu.Insert); err != nil {
 		fl.Err(err).Msg("insert")
 		return err
 	}
 
-	if _, err := db.Prepare(bg, "update", qu.Update); err != nil {
+	if _, err := db.Prepare(cm.ctx, "update", qu.Update); err != nil {
 		fl.Err(err).Msg("update")
 		return err
 	}
 
-	if _, err := db.Prepare(bg, "disable", qu.Disable); err != nil {
+	if _, err := db.Prepare(cm.ctx, "disable", qu.Disable); err != nil {
 		fl.Err(err).Msg("disable")
 		return err
 	}
@@ -1163,11 +1161,13 @@ func (cm *CMerge) loopy() {
 		nextFull.Stop()
 	}()
 
+	ctx := cm.ctx
+
 	for {
 		select {
-		case _, ok := <-cm.bye:
+		case _, ok := <-ctx.Done():
 			if !ok {
-				fl.Debug().Msg("Shutting down")
+				cm.close()
 				return
 			}
 		case <-nextPoll.C:
@@ -1217,10 +1217,10 @@ func (cm *CMerge) loopy() {
 	}
 } // }}}
 
-// func CMerge.Close {{{
+// func CMerge.close {{{
 
 // Stops all background processing and disconnects from the database.
-func (cm *CMerge) Close() {
+func (cm *CMerge) close() {
 	fl := cm.l.With().Str("func", "Close").Logger()
 
 	// Set closed
@@ -1228,12 +1228,6 @@ func (cm *CMerge) Close() {
 		fl.Info().Msg("already closed")
 		return
 	}
-
-	// Shutdown background goroutines
-	close(cm.bye)
-
-	// Don't need to watch configuration anymore.
-	cm.yc.Stop()
 
 	if db, err := cm.getDB(); err == nil {
 		db.Close()

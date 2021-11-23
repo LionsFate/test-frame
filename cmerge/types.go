@@ -1,6 +1,7 @@
 package cmerge
 
 import (
+	"context"
 	"frame/tags"
 	"frame/types"
 	"frame/yconf"
@@ -139,7 +140,7 @@ type CMerge struct {
 	yc *yconf.YConf
 
 	// Used to control shutting down background goroutines.
-	bye chan struct{}
+	ctx context.Context
 } // }}}
 
 // Convert and Notify are set in New()

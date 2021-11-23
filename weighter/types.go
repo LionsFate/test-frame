@@ -1,6 +1,7 @@
 package weighter
 
 import (
+	"context"
 	"frame/tags"
 	"frame/types"
 	"frame/yconf"
@@ -41,8 +42,20 @@ type Weighter struct {
 
 	yc *yconf.YConf
 
+	// A whitelist of all the tags we care about.
+	// 
+	// Any image loaded from the database that does not have at least one
+	// of these tags will be ignored and not loaded into our cache.
+	//
+	// This is updated when the configuration is successfully loaded via doFull()
+	//
+	// This is actually a tags.Tags, stored in an atomic.Value.
+	//
+	// Once created it is read-only, and fully replaced when it changes (not modified).
+	white atomic.Value
+
 	// Used to control shutting down background goroutines.
-	bye chan struct{}
+	ctx context.Context
 } // }}}
 
 type confQueries struct {
@@ -77,16 +90,39 @@ type cacheImage struct {
 	seen uint8
 } // }}}
 
+// type weightList struct {{{
+
+// See cacheProfile. Weights for more details on how this structure works.
+type weightList struct {
+	Weight int
+	Start  int
+	IDs    []uint64
+} // }}}
+
 // type cacheProfile struct {{{
 
 type cacheProfile struct {
 	// The profile name
 	Profile string
 
+	// So details on how this works -
+	//
+	// This is a sorted list of all the weights for this specific profile.
+	//
+	// All images that have the same weight are stored in the IDs.
+	//
+	// To figure out which image to use, we choose a random number between 0 and MaxRoll.
+	// Then we search (typically binary search) for which weightList matches that number.
+	// It has to be >= that weightList.Start and lower then the next weightList.Start.
+	//
+	// Once we've found the right weightList to use, we just choose a random number between
+	// 0 and len(weightList.IDs) to pick the actual image to use within that weight.
+	Weights []*weightList
+
+	MaxRoll int
+
 	// The TagRule that must apply for this image to be considered for inclusion in this profile or not.
 	TagRule tags.TagRule
-
-
 } // }}}
 
 // type cache struct {{{
@@ -119,15 +155,14 @@ type cache struct {
 
 	// pMut works much the same as imgMut above - Only needed to access the profiles map itself, and again cacheProfile is considered read-only once
 	// it is created. All changes to it will be done to a new cacheProfile and the map will be updated with that.
-	pMut sync.RWMutex
+	pMut     sync.RWMutex
 	profiles map[string]*cacheProfile
-
 } // }}}
 
 // type confProfile struct {{{
 
 type confProfile struct {
-	Name string
+	Name    string
 	Matches tags.TagRule
 	Weights tags.TagWeights
 } // }}}
@@ -186,12 +221,12 @@ type confYAML struct {
 
 // Updated configuration bits
 const (
-	ucDBConn    = 1 << iota // When the database connection changes
-	ucDBQuery   = 1 << iota // When at least one of the database queries change
-	ucTagRules  = 1 << iota // When TagRules change
-	ucProfiles  = 1 << iota // When any of the profiles change
-	ucPollInt   = 1 << iota
-	ucFullInt   = 1 << iota
+	ucDBConn   = 1 << iota // When the database connection changes
+	ucDBQuery  = 1 << iota // When at least one of the database queries change
+	ucTagRules = 1 << iota // When TagRules change
+	ucProfiles = 1 << iota // When any of the profiles change
+	ucPollInt  = 1 << iota
+	ucFullInt  = 1 << iota
 )
 
 // type conf struct {{{

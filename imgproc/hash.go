@@ -9,6 +9,7 @@ import (
 
 // const hash bits {{{
 
+// XXX TODO XXX Make the system use these!
 // The allowed hash types for hashing files.
 var hashes = map[string]int{
 	"sha-1":   1,
@@ -16,7 +17,7 @@ var hashes = map[string]int{
 	"sha-256": 256,
 	"sha-384": 384,
 	"sha-512": 512,
-}
+} // }}}
 
 // func ImageProc.getHash {{{
 

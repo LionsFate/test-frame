@@ -39,8 +39,6 @@ import (
 	"time"
 )
 
-// Background context, wherever needed for the db.
-var bg = context.Background()
 var emptyTime = time.Time{}
 
 // func getFileType {{{
@@ -110,11 +108,11 @@ func nextLoop(old uint32) uint32 {
 // Creates a new ImageProc.
 //
 // Checks the configuration, database and loads the cache but does not do any actual processing until Start() is called.
-func New(confPath string, tm types.TagManager, l *zerolog.Logger) (*ImageProc, error) {
+func New(confPath string, tm types.TagManager, l *zerolog.Logger, ctx context.Context) (*ImageProc, error) {
 	ip := &ImageProc{
 		l:     l.With().Str("mod", "imgproc").Logger(),
 		tm:    tm,
-		bye:   make(chan struct{}, 0),
+		ctx:   ctx,
 		cPath: confPath,
 	}
 
@@ -190,7 +188,7 @@ func (ip *ImageProc) dbConnect(co *conf) (*pgxpool.Pool, error) {
 		return nil
 	}
 
-	if db, err = pgxpool.ConnectConfig(bg, poolConf); err != nil {
+	if db, err = pgxpool.ConnectConfig(ip.ctx, poolConf); err != nil {
 		return nil, err
 	}
 
@@ -979,7 +977,7 @@ func (ip *ImageProc) updateDBPF(cr *checkRun, pc *pathCache) error {
 	}
 
 	// Get our transaction
-	tx, err := db.Begin(bg)
+	tx, err := db.Begin(ip.ctx)
 	if err != nil {
 		fl.Err(err).Msg("begin")
 		return err
@@ -988,7 +986,7 @@ func (ip *ImageProc) updateDBPF(cr *checkRun, pc *pathCache) error {
 	// Handle database path work.
 	if err := ip.updateDBPath(tx, cr, pc); err != nil {
 		fl.Err(err).Msg("updateDBPath")
-		tx.Rollback(bg)
+		tx.Rollback(ip.ctx)
 		return err
 	}
 
@@ -996,12 +994,12 @@ func (ip *ImageProc) updateDBPF(cr *checkRun, pc *pathCache) error {
 	for _, fc := range pc.Files {
 		if err := ip.updateDBFile(tx, cr, pc.id, fc); err != nil {
 			fl.Err(err).Msg("updateDBFile")
-			tx.Rollback(bg)
+			tx.Rollback(ip.ctx)
 			return err
 		}
 	}
 
-	if err = tx.Commit(bg); err != nil {
+	if err = tx.Commit(ip.ctx); err != nil {
 		fl.Err(err).Msg("commit")
 		return err
 	}
@@ -1060,7 +1058,7 @@ func (ip *ImageProc) updateDBFile(tx pgx.Tx, cr *checkRun, pid uint64, fc *fileC
 		}
 
 		// Lets update the database to disable the path
-		if _, err := tx.Exec(bg, "files-disable", fc.id); err != nil {
+		if _, err := tx.Exec(ip.ctx, "files-disable", fc.id); err != nil {
 			fl.Err(err).Uint64("fid", fc.id).Msg("disable file")
 			return err
 		}
@@ -1076,7 +1074,7 @@ func (ip *ImageProc) updateDBFile(tx pgx.Tx, cr *checkRun, pid uint64, fc *fileC
 
 	// Is this a new file?
 	if fc.id == 0 {
-		if err := tx.QueryRow(bg, "files-insert", pid, fc.Name, fc.FileTS, fc.Hash, fc.SideTS, fc.FileTG, fc.SideTG, fc.CTags).Scan(&fc.id); err != nil {
+		if err := tx.QueryRow(ip.ctx, "files-insert", pid, fc.Name, fc.FileTS, fc.Hash, fc.SideTS, fc.FileTG, fc.SideTG, fc.CTags).Scan(&fc.id); err != nil {
 			fl.Err(err).Str("file", fc.Name).Msg("insert file")
 			return err
 		}
@@ -1086,7 +1084,7 @@ func (ip *ImageProc) updateDBFile(tx pgx.Tx, cr *checkRun, pid uint64, fc *fileC
 		// Existing path - So anything to update?
 		if fc.updated&(upFileTS|upFileTG|upFileCT|upFileHS|upSideTS|upSideTG) != 0 {
 			// Update the row
-			if _, err := tx.Exec(bg, "files-update", fc.id, fc.FileTS, fc.Hash, fc.SideTS, fc.FileTG, fc.SideTG, fc.CTags); err != nil {
+			if _, err := tx.Exec(ip.ctx, "files-update", fc.id, fc.FileTS, fc.Hash, fc.SideTS, fc.FileTG, fc.SideTG, fc.CTags); err != nil {
 				fl.Err(err).Uint64("fid", fc.id).Msg("update file")
 				return err
 			}
@@ -1139,7 +1137,7 @@ func (ip *ImageProc) updateDBPath(tx pgx.Tx, cr *checkRun, pc *pathCache) error 
 		}
 
 		// Lets update the database to disable the path
-		if _, err := tx.Exec(bg, "paths-disable", pc.id); err != nil {
+		if _, err := tx.Exec(ip.ctx, "paths-disable", pc.id); err != nil {
 			fl.Err(err).Uint64("pid", pc.id).Msg("disable path")
 			return err
 		}
@@ -1151,7 +1149,7 @@ func (ip *ImageProc) updateDBPath(tx pgx.Tx, cr *checkRun, pc *pathCache) error 
 
 	// Is this a new path?
 	if pc.id == 0 {
-		if err := tx.QueryRow(bg, "paths-insert", cr.bc.Base, pc.Path, pc.Changed, pc.Tags).Scan(&pc.id); err != nil {
+		if err := tx.QueryRow(ip.ctx, "paths-insert", cr.bc.Base, pc.Path, pc.Changed, pc.Tags).Scan(&pc.id); err != nil {
 			fl.Err(err).Str("path", pc.Path).Msg("insert path")
 			return err
 		}
@@ -1161,7 +1159,7 @@ func (ip *ImageProc) updateDBPath(tx pgx.Tx, cr *checkRun, pc *pathCache) error 
 		// Existing path - So anything to update?
 		if pc.updated&(upPathTG|upPathTS) != 0 {
 			// Update the row
-			if _, err := tx.Exec(bg, "paths-update", pc.id, pc.Changed, pc.Tags); err != nil {
+			if _, err := tx.Exec(ip.ctx, "paths-update", pc.id, pc.Changed, pc.Tags); err != nil {
 				fl.Err(err).Uint64("pid", pc.id).Msg("update path")
 				return err
 			}
@@ -1216,7 +1214,7 @@ func (ip *ImageProc) loadCache() error {
 		ca.bases[bid] = bc
 
 		// And now run through the paths
-		pathRows, err := db.Query(bg, "paths-select", bid)
+		pathRows, err := db.Query(ip.ctx, "paths-select", bid)
 		if err != nil {
 			fl.Err(err).Msg("paths-select")
 			return err
@@ -1259,7 +1257,7 @@ func (ip *ImageProc) loadCache() error {
 
 		// Now we loop through all the paths we just loaded and get all the files for each to cache.
 		for _, pc := range bc.Paths {
-			fileRows, err := db.Query(bg, "files-select", pc.id)
+			fileRows, err := db.Query(ip.ctx, "files-select", pc.id)
 			if err != nil {
 				fl.Err(err).Msg("files-select")
 				return err
@@ -1330,42 +1328,42 @@ func (ip *ImageProc) setupDB(co *conf, db *pgx.Conn) error {
 	queries := co.Queries
 
 	// Lets prepare all our statements
-	if _, err := db.Prepare(bg, "paths-select", queries.PathsSelect); err != nil {
+	if _, err := db.Prepare(ip.ctx, "paths-select", queries.PathsSelect); err != nil {
 		fl.Err(err).Msg("paths-select")
 		return err
 	}
 
-	if _, err := db.Prepare(bg, "paths-insert", queries.PathsInsert); err != nil {
+	if _, err := db.Prepare(ip.ctx, "paths-insert", queries.PathsInsert); err != nil {
 		fl.Err(err).Msg("paths-insert")
 		return err
 	}
 
-	if _, err := db.Prepare(bg, "paths-update", queries.PathsUpdate); err != nil {
+	if _, err := db.Prepare(ip.ctx, "paths-update", queries.PathsUpdate); err != nil {
 		fl.Err(err).Msg("paths-update")
 		return err
 	}
 
-	if _, err := db.Prepare(bg, "paths-disable", queries.PathsDisable); err != nil {
+	if _, err := db.Prepare(ip.ctx, "paths-disable", queries.PathsDisable); err != nil {
 		fl.Err(err).Msg("paths-disable")
 		return err
 	}
 
-	if _, err := db.Prepare(bg, "files-select", queries.FilesSelect); err != nil {
+	if _, err := db.Prepare(ip.ctx, "files-select", queries.FilesSelect); err != nil {
 		fl.Err(err).Msg("files-select")
 		return err
 	}
 
-	if _, err := db.Prepare(bg, "files-insert", queries.FilesInsert); err != nil {
+	if _, err := db.Prepare(ip.ctx, "files-insert", queries.FilesInsert); err != nil {
 		fl.Err(err).Msg("files-insert")
 		return err
 	}
 
-	if _, err := db.Prepare(bg, "files-update", queries.FilesUpdate); err != nil {
+	if _, err := db.Prepare(ip.ctx, "files-update", queries.FilesUpdate); err != nil {
 		fl.Err(err).Msg("files-update")
 		return err
 	}
 
-	if _, err := db.Prepare(bg, "files-disable", queries.FilesDisable); err != nil {
+	if _, err := db.Prepare(ip.ctx, "files-disable", queries.FilesDisable); err != nil {
 		fl.Err(err).Msg("files-disable")
 		return err
 	}
@@ -1555,6 +1553,8 @@ func (ip *ImageProc) loopy() {
 	baseTick := time.NewTicker(5 * time.Minute)
 	defer baseTick.Stop()
 
+	ctx := ip.ctx
+
 	// Get the initial checks
 	checks := ip.makeCheckIntervals()
 
@@ -1582,34 +1582,28 @@ func (ip *ImageProc) loopy() {
 			// And our baseTick
 			baseTick.Reset(checks[0].nextDur)
 			fl.Debug().Dur("baseTick", checks[0].nextDur).Msg("next tick")
-		case _, ok := <-ip.bye:
+		case _, ok := <-ctx.Done():
 			if !ok {
-				fl.Debug().Msg("Shutting down")
+				ip.close()
 				return
 			}
 		}
 	}
 } // }}}
 
-// func ImageProc.Close {{{
+// func ImageProc.close {{{
 
 // Stops all background processing and disconnects from the database.
 //
 // This can block as it waits on the database to close.
-func (ip *ImageProc) Close() {
-	fl := ip.l.With().Str("func", "Stop").Logger()
+func (ip *ImageProc) close() {
+	fl := ip.l.With().Str("func", "close").Logger()
 
 	// Set closed
 	if !atomic.CompareAndSwapUint32(&ip.closed, 0, 1) {
 		fl.Info().Msg("already closed")
 		return
 	}
-
-	// Shutdown background goroutines
-	close(ip.bye)
-
-	// Don't need to watch configuration anymore.
-	ip.yc.Stop()
 
 	// Shutting down, so get the database to shut it down.
 	if db, err := ip.getDB(); err == nil {

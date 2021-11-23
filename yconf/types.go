@@ -1,6 +1,7 @@
 package yconf
 
 import (
+	"context"
 	"github.com/rs/zerolog"
 	"sync"
 	"time"
@@ -77,7 +78,7 @@ type YConf struct {
 	confPath string
 
 	// Lets us know when we need to shutdown.
-	bye chan struct{}
+	ctx context.Context
 
 	// So we know the type we load into.
 	ca Callers
