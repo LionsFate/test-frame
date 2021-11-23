@@ -11,7 +11,6 @@ import (
 	"github.com/rs/zerolog"
 	"os"
 	"os/signal"
-	"sort"
 	"syscall"
 	"time"
 )
@@ -24,27 +23,7 @@ func usage() {
 	os.Exit(-1)
 } // }}}
 
-type confPath struct {
-	// Each base path is given a unique 64-bit ID to identify its starting location.
-	ID   uint64 `yaml:"id"`
-	Path string `yaml:"path"`
-
-	// Default tags to apply to this specific directory, and everything under it.
-	//
-	// These are the strings from the YAML configuration, not yet processed.
-	StringTags []string `yaml:"tags"`
-}
-
-type confPaths []confPath
-
-func (cp confPaths) Len() int           { return len(cp) }
-func (cp confPaths) Less(i, j int) bool { return cp[i].Path < cp[j].Path }
-func (cp confPaths) Swap(i, j int)      { cp[i], cp[j] = cp[j], cp[i] }
-func (cp confPaths) Sort()              { sort.Sort(cp) }
-
 type confFile struct {
-	Paths confPaths `yaml:"paths"`
-
 	// File/Path to the TagManager configuration, passed in to tagmanager.New()
 	//
 	// This one is not optional.

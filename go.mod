@@ -1,6 +1,7 @@
 module frame
 
 require (
+	github.com/anthonynsimon/bild v0.13.0
 	github.com/disintegration/imaging v1.6.2
 	github.com/jackc/pgx/v4 v4.10.1
 	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646
