@@ -5,10 +5,11 @@ import (
 	"frame/tags"
 	"frame/types"
 	"frame/yconf"
-	"github.com/rs/zerolog"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 // type Weighter struct {{{
@@ -77,11 +78,6 @@ type cacheImage struct {
 
 	// Our combined tags from all the files with the same hash, as well as our tag rules.
 	Tags tags.Tags
-
-	// If the image tags changed or not.
-	//
-	// Signals that this image needs to be checked for profile inclusion (or exclusion).
-	changed bool
 
 	// Lets us know if the image we seen by the full query or not.
 	//

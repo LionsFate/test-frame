@@ -6,13 +6,13 @@ import (
 	"frame/tags"
 	"frame/types"
 	"frame/yconf"
+	"sync/atomic"
+	"time"
+
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/log/zerologadapter"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/rs/zerolog"
-	"sort"
-	"sync/atomic"
-	"time"
 )
 
 // func yconfMerge {{{
@@ -181,19 +181,6 @@ func New(confPath string, tm types.TagManager, l *zerolog.Logger, ctx context.Co
 	return we, nil
 } // }}}
 
-// func Weighter.doPoll {{{
-
-func (we *Weighter) doPoll() error {
-	// First is the poll query.
-	if err := we.pollQuery(); err != nil {
-		return err
-	}
-
-	// XXX TODO Yeah, does nothing right now. Mooga.
-	return nil
-
-} // }}}
-
 // func Weighter.makeProfileWeights {{{
 
 // XXX TODO Totally untested, eh?
@@ -324,9 +311,6 @@ func (we *Weighter) doFull() error {
 	// Get the cache
 	ca := we.ca
 
-	// Need the whitelist before we do the full query.
-	we.makeWhitelist()
-
 	// We need a write lock on the images map.
 	//
 	// Note that the images map is only used by queries and when generating profiles, not when asking for profile matches.
@@ -347,54 +331,68 @@ func (we *Weighter) doFull() error {
 	return nil
 } // }}}
 
+// func Weighter.doPoll {{{
+
+func (we *Weighter) doPoll() error {
+	// Get the cache
+	ca := we.ca
+
+	// We need a write lock on the images map.
+	//
+	// Note that the images map is only used by queries and when generating profiles, not when asking for profile matches.
+	// So its safe to aquire this lock without worry about us stalling the Weighter.
+	ca.imgMut.Lock()
+	defer ca.imgMut.Unlock()
+
+	// First is the full query.
+	changed, err := we.pollQuery(ca)
+	if err != nil {
+		return err
+	}
+
+	// Any actual changes? No changes, no updating profiles.
+	if changed {
+		// Now generate the profiles from all the images loaded.
+		if err := we.makeProfileWeights(ca); err != nil {
+			return err
+		}
+	}
+
+	return nil
+} // }}}
+
 // func Weighter.pollQuery {{{
 
-func (we *Weighter) pollQuery() error {
+func (we *Weighter) pollQuery(ca *cache) (bool, error) {
 	var id uint64
 	var hash string
-	var changed []uint64
-	var enabled bool
+	var enabled, changed bool
 	var tgs tags.Tags
 
 	fl := we.l.With().Str("func", "pollQuery").Logger()
 
+	// Get the whitelist to filter out images we don't care about.
+	wl := we.getWhite()
+
 	db, err := we.getDB()
 	if err != nil {
 		fl.Err(err).Msg("getDB")
-		return err
+		return changed, err
 	}
 
 	// The query should already be prepared at connection.
 	pollRows, err := db.Query(we.ctx, "poll")
 	if err != nil {
 		fl.Err(err).Msg("poll")
-		return err
+		return changed, err
 	}
 
-	ca := we.ca
-
-	ca.imgMut.Lock()
-	defer ca.imgMut.Unlock()
-
 	for pollRows.Next() {
-		// SELECT fid, hash, tags, enabled FROM files.files WHERE updated >= NOW() - interval '5 minutes'
-		//
-		// I took some time to think about how I wanted to do this query.
-		// Initially I wanted to pass in the most recent updated timestamp from the full query, and just get the changes since then.
-		// But for this specific use case, I found that to be inefficent for the needs of the application.
-		//
-		// I've done things like this previously, one database would normally get thousands of rows updated every minute, so it was logical
-		// to only get new updates since the last updated row seen based off that updated time.
-		//
-		// But this application? At least for my purposes I can see going hours, days or more without any updates.
-		// So to always be asking for rows that could be from days ago?
-		//
-		// So I opted to move the update tracking to the query itself, and only get recently changed rows based off
-		// the current time.
+		// SELECT id, hash, tags, enabled FROM files.merged WHERE updated >= NOW() - interval '5 minutes'
 		if err := pollRows.Scan(&id, &hash, &tgs, &enabled); err != nil {
 			pollRows.Close()
 			fl.Err(err).Msg("poll-rows-scan")
-			return err
+			return changed, err
 		}
 
 		// Don't assume the database doesn't have duplicates and is sorted properly.
@@ -410,6 +408,11 @@ func (we *Weighter) pollQuery() error {
 				continue
 			}
 
+			// Does it pass the whitelist?
+			if !tgs.Contains(wl) {
+				continue
+			}
+
 			// First file for this hash, go ahead and create it.
 			img = &cacheImage{
 				ID:      id,
@@ -417,34 +420,29 @@ func (we *Weighter) pollQuery() error {
 				Tags:    tgs,
 			}
 
-			changed = append(changed, id)
+			changed = true
 			ca.images[id] = img
+			continue
 		}
 
 		// Should the file be removed?
 		if !enabled {
 			// Yep, so delete it and move on.
 			delete(ca.images, id)
-			changed = append(changed, id)
+			changed = true
 			continue
 		}
 
 		// Tags change?
 		if !tgs.Equal(img.Tags) {
 			img.Tags = tgs
-			changed = append(changed, id)
+			changed = true
 		}
 	}
 
 	pollRows.Close()
 
-	// Sort changed before we set it.
-	sort.Slice(changed, func(i, j int) bool { return changed[i] < changed[j] })
-	
-	// Set the new changed.
-	ca.pollChanged = changed
-
-	return nil
+	return changed, nil
 } // }}}
 
 // func Weighter.fullQuery {{{
@@ -501,7 +499,7 @@ func (we *Weighter) fullQuery(ca *cache) error {
 			continue
 		}
 
-		// Does this hash already exist?
+		// Does this image already exist?
 		img, ok := ca.images[id]
 		if !ok {
 			// Nope, first one - Go ahead and create it.
@@ -509,7 +507,6 @@ func (we *Weighter) fullQuery(ca *cache) error {
 				ID:   id,
 				Hash: hash,
 				Tags: tgs,
-				changed: true,
 				seen: ca.seen,
 			}
 
@@ -524,7 +521,6 @@ func (we *Weighter) fullQuery(ca *cache) error {
 
 		// Tags change?
 		if !tgs.Equal(img.Tags) {
-			img.changed = true
 			img.Tags = tgs
 		}
 	}
@@ -603,6 +599,9 @@ func (we *Weighter) loadConf() error {
 		return err
 	}
 
+	// Create the new Whitelist of tags.
+	we.makeWhitelist()
+
 	// Looks good, go ahead and store it.
 	we.co.Store(co)
 
@@ -641,6 +640,13 @@ func (we *Weighter) notifyConf() {
 		}
 	}
 
+	// The whitelist is based off the tags in the profiles.
+	// So if any of the profiles changed then we need to regenerate the whitelist.
+	if ucBits&ucProfiles != 0 {
+		// Create the new Whitelist of tags.
+		we.makeWhitelist()
+	}
+
 	// Store the new configuration
 	we.co.Store(co)
 
@@ -652,13 +658,13 @@ func (we *Weighter) notifyConf() {
 	// on without issue.
 	//
 	// Obviously changing any of the TagRules or BlockTags would force another full, as skipping a full on these would
-	// mean only updated files would apply these new rules.
+	// mean only updated images would apply these new rules.
 	if ucBits&(ucDBConn|ucDBQuery|ucTagRules|ucProfiles) != 0 {
 		// Something changed that should force a full
 		go we.doFull()
 	}
 
-	// Note - We did not check ucPullInt here, thats handled in the partial loop and it will adjust on its next patial run.
+	// Note - We did not check ucPollInt here, thats handled in the partial loop and it will adjust on its next patial run.
 	fl.Info().Msg("configuration updated")
 } // }}}
 
