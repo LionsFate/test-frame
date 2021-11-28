@@ -40,7 +40,7 @@ CREATE OR REPLACE FUNCTION get_tagid(wanted varchar(128)) RETURNS bigint
 			-- So we loop in case someone else inserts the same tag we are trying to at the same time as us.
 			LOOP
 				-- First, does this tag already exist?
-				SELECT tid, parent INTO vtid, vparent FROM tags WHERE name = wanted;
+				SELECT tid, parent INTO vtid, vparent FROM tags.tags WHERE name = wanted;
 				IF FOUND THEN
 					IF vparent IS NOT NULL THEN
 						RETURN vparent;
@@ -54,7 +54,7 @@ CREATE OR REPLACE FUNCTION get_tagid(wanted varchar(128)) RETURNS bigint
 					-- Two things we account for here. The insert works, in which case the next loop finds it.
 					-- Or the insert fails because it was inserted after our SELECT above (unique_violation), in
 					-- which case the next loop also catches the new tid.
-					INSERT INTO tags ( name ) VALUES ( wanted );
+					INSERT INTO tags.tags ( name ) VALUES ( wanted );
 					EXCEPTION WHEN unique_violation THEN
 						-- It was inserted already, so we ignore this and loop.
 						NULL;

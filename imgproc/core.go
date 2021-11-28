@@ -22,15 +22,17 @@ import (
 	fimg "frame/image"
 	"frame/tags"
 	"frame/types"
+	"image/png"
+	"io/fs"
+	"path/filepath"
+	"sync/atomic"
+
 	"github.com/disintegration/imaging"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/log/zerologadapter"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/rs/zerolog"
-	"image/png"
-	"io/fs"
-	"path/filepath"
-	"sync/atomic"
+
 	//"frame/types"
 	"io"
 	"os"
@@ -737,7 +739,7 @@ func (ip *ImageProc) setFileHash(cr *checkRun, pc *pathCache, fc *fileCache) err
 		// We expect the path to not exist - Other errors though, we don't expect.
 		if os.IsNotExist(err) {
 			// Create the needed path(s)
-			if err := os.MkdirAll(hPath, 0x755); err != nil {
+			if err := os.MkdirAll(hPath, 0755); err != nil {
 				fl.Err(err).Msg("mkdirall")
 				return err
 			}
@@ -790,6 +792,7 @@ func (ip *ImageProc) setFileHash(cr *checkRun, pc *pathCache, fc *fileCache) err
 
 // func ImageProc.checkBase {{{
 
+// TODO Need to check if the database has the base setup, otherwise it just errors.
 func (ip *ImageProc) checkBase(bc *baseCache) {
 	fl := ip.l.With().Str("func", "checkBase").Int("base", bc.Base).Logger()
 	start := time.Now()
@@ -882,7 +885,7 @@ func (ip *ImageProc) checkBase(bc *baseCache) {
 	// Ok, now we calculate both the tags and hashes, create the physical cache file,
 	// and update the database.
 	if err := ip.checkHashTagsDB(cr); err != nil {
-		fl.Err(err).Msg("checkHasTags")
+		fl.Err(err).Msg("checkHashTags")
 		return
 	}
 

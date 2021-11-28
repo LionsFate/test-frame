@@ -166,14 +166,12 @@ func New(confPath string, tm types.TagManager, l *zerolog.Logger, ctx context.Co
 		return nil, err
 	}
 
-	fl.Debug().Send()
-
 	// XXX BLAH BLAH startup stuff blah blah XXX
 
 	// Start background processing to watch configuration for changes.
 	we.yc.Start()
 
-	// Start the partial loop.
+	// Start the regular database background loop.
 	go we.loopy()
 
 	fl.Debug().Send()
