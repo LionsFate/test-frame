@@ -609,7 +609,7 @@ func (ip *ImageProc) checkHashTagsDB(cr *checkRun) error {
 			// Any tags change?
 			//
 			// Or, does the file itself not have any tags at all?
-			if pathTags || fc.updated&upSideTG != 0 || len(fc.SideTG) == 0 {
+			if pathTags || fc.updated&upSideTG != 0 || len(fc.CTags) == 0 {
 				// Lets calculate the new tags.
 				nTags := tags.Tags{}
 				nTags = nTags.Combine(pc.Tags)
