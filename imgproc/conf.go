@@ -5,12 +5,13 @@ import (
 	"fmt"
 	"frame/tags"
 	"frame/yconf"
-	"github.com/jackc/pgx/v4"
-	"github.com/jackc/pgx/v4/log/zerologadapter"
-	"github.com/jackc/pgx/v4/pgxpool"
 	"os"
 	"sync/atomic"
 	"time"
+
+	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v4/log/zerologadapter"
+	"github.com/jackc/pgx/v4/pgxpool"
 )
 
 // This file contains all functions related to the loading of our configuration files.
@@ -262,7 +263,22 @@ func yconfMerge(inAInt, inBInt interface{}) (interface{}, error) {
 					baseA.Tags = baseA.Tags.Add(id)
 				}
 
-				// Path merging.
+				// It is possible for paths within the base to be added before the base itself.
+				//
+				// This results in an empty main path for the base itself.
+				//
+				// We account for that here.
+				if baseA.Path == "" {
+					baseA.Path = base.Path
+				}
+
+				// The CheckInterval can be 0, same type of logic as above.
+				// Paths added before the main base create an otherwise empty base.
+				if baseA.CheckInt == 0 {
+					baseA.CheckInt = base.CheckInt
+				}
+
+				// Paths within the base merging.
 				if base.Paths != nil {
 					if baseA.Paths == nil {
 						// A doesn't have paths, so just copy B's paths over.
@@ -422,6 +438,29 @@ func (ip *ImageProc) checkConf(co *conf, reload bool) (bool, uint64) {
 	if len(co.Bases) < 1 {
 		fl.Warn().Msg("no bases loaded")
 		return false, ucBits
+	}
+
+	// Basic sanity checks on each base.
+	for id, bc := range co.Bases {
+		if id == 0 {
+			fl.Warn().Msg("Base ID 0 is not valid")
+			return false, ucBits
+		}
+
+		if bc.Path == "" {
+			fl.Warn().Int("base", id).Msg("Base has no path")
+			return false, ucBits
+		}
+
+		if len(bc.Tags) < 1 {
+			fl.Warn().Int("base", id).Msg("Base needs at least 1 tag")
+			return false, ucBits
+		}
+
+		if bc.CheckInt < time.Second*10 {
+			fl.Warn().Int("base", id).Msg("Base checkinterval needs to be 10 seconds or more")
+			return false, ucBits
+		}
 	}
 
 	// We have our queries?
