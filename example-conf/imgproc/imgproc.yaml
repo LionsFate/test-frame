@@ -1,0 +1,17 @@
+maxresolution: "3840x3840"
+database: "service=frame"
+imagecache: /home/user/image-cache
+
+bases:
+  /home/user/photos/testing:
+    base: 1
+    checkinterval: "5h"
+    tags:
+      - testing
+
+  "/home/user/Pictures/Twitter stuff/":
+    base: 2
+    checkinterval: "1h"
+    tags:
+      - twitter
+

@@ -5,12 +5,13 @@ import (
 	"frame/tags"
 	"frame/types"
 	"frame/yconf"
-	"github.com/rs/zerolog"
 	"image"
 	"io/fs"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 type confBaseYAML struct {
@@ -164,7 +165,6 @@ type checkInterval struct {
 const (
 	// Bits specific to the image files
 	upFileTS = 1 << iota // The file modified time
-	upFileTG = 1 << iota // The file tags
 	upFileCT = 1 << iota // The file calculated tags changed
 	upFileHS = 1 << iota // The file hash changed
 
@@ -189,9 +189,6 @@ type fileCache struct {
 
 	// Last updated time of the sidecar
 	SideTS time.Time
-
-	// These are the tags loaded from the file only, EXIF data from jp(e)g files.
-	FileTG tags.Tags
 
 	// Any tags loaded from the sidecar, the .txt or .xmp file.
 	SideTG tags.Tags

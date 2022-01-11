@@ -1,0 +1,44 @@
+queries:
+  # This query needs to return all path rows for the base id provided.
+  #
+  # Its the only query of the 4 for paths that returns more then a single row.
+  #
+  # The result must accept the base ID as the 1 option, and return 4 columns with specific orders (name does not matter) -
+  #
+  #  - Path ID (uint64)
+  #  - Path    (string)
+  #  - Changed (time.Time)
+  #  - Tags    (tags.Tags)
+  #
+  paths-select: 'SELECT pid, name, pathts, tags FROM files.paths WHERE bid = $1 AND enabled'
+
+  # This is for inserting new entries into the database.
+  # The provied query though is more an upsert then an actual insert, this is do to my own personal setup.
+  #
+  # I like to disable and not delete, and this handles re-enabling disabled rows just fine.
+  #
+  # This query expects to return a single uint64 to represent the database id.
+  paths-insert: 'INSERT INTO files.paths ( bid, name, pathts, tags ) VALUES ( $1, $2, $3, $4 ) ON CONFLICT ON CONSTRAINT "paths_bid_name_key" DO UPDATE SET pathts = EXCLUDED.pathts, tags = EXCLUDED.tags, enabled = true RETURNING pid'
+
+  # Your standard update, is given the path timestamp and the tags, with the path id to match them back to.
+  paths-update: 'UPDATE files.paths SET pathts = $2, tags = $3 WHERE pid = $1'
+
+  # I named this "disable" rather than "delete" as its more what I tend to do, not delete right away but let some time pass before doing the actual delete in the database.
+  #
+  # Though you can easily change the queries to delete the rows without issue - Your database, do as you will.
+  #
+  # Also, I use remote mounts for a lot of my storage, and remote mounts can be flaky at times, I don't want to end up deleting thousands of rows when a mount disappears during a power outage.
+  # In these situations thousands of rows will be disabled, but at least I can just update them when I fix the mount point and continue on my way.
+  paths-disable: 'UPDATE files.paths SET enabled = false WHERE pid = $1'
+
+  files-select: 'SELECT fid, name, filets, hash, sidets, sidetags, tags FROM files.files WHERE pid = $1 AND enabled'
+
+  # db.QueryRow(bg, "files-insert", pid, fc.Name, fc.FileTS, fc.Hash, fc.SideTS, fc.SideTG, fc.CTags).Scan(&fc.id)
+  files-insert: 'INSERT INTO files.files ( pid, name, filets, hash, sidets, sidetags, tags ) VALUES ( $1, $2, $3, $4, $5, $6, $7 ) ON CONFLICT ON CONSTRAINT "files_pid_name_key" DO UPDATE SET filets = EXCLUDED.filets, hash = EXCLUDED.hash, sidets = EXCLUDED.sidets, sidetags = EXCLUDED.sidetags, tags = EXCLUDED.tags, enabled = true RETURNING fid'
+
+  # db.Exec(bg, "files-update", fc.id, fc.FileTS, fc.Hash, fc.SideTS, fc.SideTG, fc.CTags)
+  files-update: 'UPDATE files.files SET filets = $2, hash = $3, sidets = $4, sidetags = $5, tags = $6 WHERE fid = $1'
+
+  # db.Exec(bg, "files-disable", fc.id)
+  files-disable: 'UPDATE files.files SET enabled = false WHERE fid = $1'
+

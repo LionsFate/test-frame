@@ -1,0 +1,16 @@
+# The tag manager needed for pretty much everything.
+#
+# This needs to be set to the path containing the configuration files for the tag manager.
+tagmanager: example-conf/tagmanager
+
+imageproc: example-conf/imgproc
+
+cachemerge: example-conf/cachemerge
+
+# Path to write the hourly log file to.
+# As well as all STDOUT and STDERR output will be redirected to the logs.
+#
+# Do not set and STDOUT/STDERR will be left untouched, and all log output will
+# be sent to STDOUT.
+logpath: logs/
+

@@ -49,7 +49,13 @@ var emptyTime = time.Time{}
 //
 // If its an image, 1 is returned and the 2nd value can be ignored.
 //
-// If its a sidecar 2 (txt) or 3 (xmp) is returned, and the name of the base image (removing the .txt or .xmp) is returned.
+// If its a sidecar 2 (txt) is returned, and the name of the base image (removing the .txt) is returned.
+//
+// This has potential to be expanded, such as with .xmp files.
+// I had that at one point, but there were so many variances I decided to just simplify this
+// code and read only a .txt file, with a single tag per line.
+//
+// Figure users can convert any other tag formats to a simple line-per text file easily enough.
 //
 // Returns 0 if the file is none of the above.
 func getFileType(file string) (int, string) {
@@ -81,12 +87,6 @@ func getFileType(file string) (int, string) {
 		}
 
 		// Not a valid sidecar
-		return 0, ""
-	case ".xmp":
-		nfile := file[:len(file)-4]
-		if ft, _ := getFileType(nfile); ft == 1 {
-			return 3, nfile
-		}
 		return 0, ""
 	}
 
@@ -557,8 +557,9 @@ func (ip *ImageProc) checkBasePath(cr *checkRun, pc *pathCache, path string, ful
 				nfl.Err(err).Send()
 				return err
 			}
-		case 3:
-			nfl.Debug().Str("image", iname).Msg("XMP Sidecar")
+		default:
+			nfl.Warn().Str("image", iname).Int("type", ft).Msg("Unsupported filetype")
+			continue
 		}
 	}
 
@@ -606,11 +607,12 @@ func (ip *ImageProc) checkHashTagsDB(cr *checkRun) error {
 			}
 
 			// Any tags change?
-			if pathTags || fc.updated&(upFileTG|upSideTG) != 0 {
+			//
+			// Or, does the file itself not have any tags at all?
+			if pathTags || fc.updated&upSideTG != 0 || len(fc.SideTG) == 0 {
 				// Lets calculate the new tags.
 				nTags := tags.Tags{}
 				nTags = nTags.Combine(pc.Tags)
-				nTags = nTags.Combine(fc.FileTG)
 				nTags = nTags.Combine(fc.SideTG)
 
 				// Now did they actually change?
@@ -622,6 +624,19 @@ func (ip *ImageProc) checkHashTagsDB(cr *checkRun) error {
 					fc.updated |= upFileCT
 					pc.updated |= upPathFI
 				}
+			}
+
+			// If a file has no tags, we consider this to be an error.
+			// All files must have at least 1 tag to be useful at all to us.
+			//
+			// You can add default tags just be adding path tags or tags to the
+			// base itself, so this really just means a misconfiguration typically.
+			//
+			// We do not bother doing any update or further check on the file
+			// when its missing its tags.
+			if len(fc.CTags) == 0 {
+				fl.Warn().Str("file", fc.Name).Msg("Has no tags")
+				continue
 			}
 
 			// Did the file timestamp change?
@@ -696,7 +711,7 @@ func (ip *ImageProc) setFileHash(cr *checkRun, pc *pathCache, fc *fileCache) err
 
 	//fl.Info().Str("hash", tHash).Send()
 
-	// Now, does the cadche file already exist?
+	// Now, does the cache file already exist?
 	//
 	// This can happen for any number of reasons, as myself - I have many duplicate files, sadly, and not always the same tags for each.
 	// So its possible another base, or even another file within the same base is a duplicate that already created the cache file.
@@ -1027,6 +1042,13 @@ func (ip *ImageProc) updateDBPF(cr *checkRun, pc *pathCache) error {
 func (ip *ImageProc) updateDBFile(tx pgx.Tx, cr *checkRun, pid uint64, fc *fileCache) error {
 	fl := ip.l.With().Str("func", "updateDBFile").Uint64("pid", pid).Str("file", fc.Name).Logger()
 
+	// A file without any tags is of no value to the system, and can not be
+	// inserted into the database.
+	if len(fc.CTags) == 0 {
+		fl.Warn().Msg("Has no tags")
+		return nil
+	}
+
 	// Loop check - If we didn't see the file this loop we disable it.
 	//
 	// Note we don't check fileError yet, as this allows a previously errored file to be removed, and properly cleaned out here.
@@ -1077,7 +1099,7 @@ func (ip *ImageProc) updateDBFile(tx pgx.Tx, cr *checkRun, pid uint64, fc *fileC
 
 	// Is this a new file?
 	if fc.id == 0 {
-		if err := tx.QueryRow(ip.ctx, "files-insert", pid, fc.Name, fc.FileTS, fc.Hash, fc.SideTS, fc.FileTG, fc.SideTG, fc.CTags).Scan(&fc.id); err != nil {
+		if err := tx.QueryRow(ip.ctx, "files-insert", pid, fc.Name, fc.FileTS, fc.Hash, fc.SideTS, fc.SideTG, fc.CTags).Scan(&fc.id); err != nil {
 			fl.Err(err).Str("file", fc.Name).Msg("insert file")
 			return err
 		}
@@ -1085,9 +1107,9 @@ func (ip *ImageProc) updateDBFile(tx pgx.Tx, cr *checkRun, pid uint64, fc *fileC
 		fl.Debug().Str("file", fc.Name).Uint64("id", fc.id).Send()
 	} else {
 		// Existing path - So anything to update?
-		if fc.updated&(upFileTS|upFileTG|upFileCT|upFileHS|upSideTS|upSideTG) != 0 {
+		if fc.updated&(upFileTS|upFileCT|upFileHS|upSideTS|upSideTG) != 0 {
 			// Update the row
-			if _, err := tx.Exec(ip.ctx, "files-update", fc.id, fc.FileTS, fc.Hash, fc.SideTS, fc.FileTG, fc.SideTG, fc.CTags); err != nil {
+			if _, err := tx.Exec(ip.ctx, "files-update", fc.id, fc.FileTS, fc.Hash, fc.SideTS, fc.SideTG, fc.CTags); err != nil {
 				fl.Err(err).Uint64("fid", fc.id).Msg("update file")
 				return err
 			}
@@ -1182,7 +1204,7 @@ func (ip *ImageProc) loadCache() error {
 	var inID uint64
 	var name, hash string
 	var changed, sidets time.Time
-	var tgs, fileTags, sideTags tags.Tags
+	var tgs, sideTags tags.Tags
 
 	fl := ip.l.With().Str("func", "loadCache").Logger()
 
@@ -1272,15 +1294,14 @@ func (ip *ImageProc) loadCache() error {
 				//
 				// Default query I used for development -
 				//
-				//   SELECT fid, name, filets, hash, sidets, filetags, sidetags, tags FROM files.files WHERE pid = $1 AND enabled
-				if err := fileRows.Scan(&inID, &name, &changed, &hash, &sidets, &fileTags, &sideTags, &tgs); err != nil {
+				//   SELECT fid, name, filets, hash, sidets, sidetags, tags FROM files.files WHERE pid = $1 AND enabled
+				if err := fileRows.Scan(&inID, &name, &changed, &hash, &sidets, &sideTags, &tgs); err != nil {
 					fileRows.Close()
 					fl.Err(err).Msg("files-select-rows-scan")
 					return err
 				}
 
 				// Fix our tags
-				fileTags = fileTags.Fix()
 				sideTags = sideTags.Fix()
 				tgs = tgs.Fix()
 
@@ -1291,7 +1312,6 @@ func (ip *ImageProc) loadCache() error {
 					Hash:   hash,
 					FileTS: changed,
 					SideTS: sidets,
-					FileTG: fileTags.Copy(),
 					SideTG: sideTags.Copy(),
 					CTags:  tgs.Copy(),
 				}
