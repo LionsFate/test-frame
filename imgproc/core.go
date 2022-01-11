@@ -23,22 +23,20 @@ import (
 	"frame/tags"
 	"frame/types"
 	"image/png"
+	"io"
 	"io/fs"
+	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/disintegration/imaging"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/log/zerologadapter"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/rs/zerolog"
-
-	//"frame/types"
-	"io"
-	"os"
-	"sort"
-	"strings"
-	"time"
 )
 
 var emptyTime = time.Time{}
@@ -410,6 +408,8 @@ func (ip *ImageProc) getPathCache(cr *checkRun, path string, inheritTags tags.Ta
 	cp, ok := cr.cb.Paths[path]
 	if ok {
 		if len(cp.Tags) > 0 {
+			// Force inherit so we set the tags properly.
+			inherit = true
 			inheritTags = cp.Tags
 		}
 	}
@@ -423,6 +423,8 @@ func (ip *ImageProc) getPathCache(cr *checkRun, path string, inheritTags tags.Ta
 			pc.Tags = inheritTags
 		}
 	}
+
+	fl.Debug().Send()
 
 	return pc, nil
 } // }}}
