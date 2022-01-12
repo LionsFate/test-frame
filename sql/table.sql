@@ -132,6 +132,9 @@ CREATE TABLE IF NOT EXISTS paths (
 	-- When the path was last changed
 	pathts timestamptz NOT NULL DEFAULT NOW(),
 
+	-- When the sidecar/tagfile was last changed.
+	sidets timestamptz NOT NULL DEFAULT NOW(),
+
 	-- Any tags assigned to this specific path.
 	-- Can be NULL.
 	tags bigint[] DEFAULT NULL,
@@ -154,7 +157,7 @@ CREATE OR REPLACE FUNCTION paths_upd() RETURNS trigger
 	LANGUAGE plpgsql SECURITY DEFINER
 	AS $$
 		BEGIN
-			IF NEW.pathts != OLD.pathts OR NEW.tags != OLD.tags OR NEW.enabled != OLD.enabled THEN
+			IF NEW.pathts != OLD.pathts OR NEW.tags != OLD.tags OR NEW.enabled != OLD.enabled OR NEW.sidets != OLD.sidets THEN
 				NEW.updated = NOW();
 			END IF;
 			RETURN NEW;

@@ -3,7 +3,6 @@ package imgproc
 import (
 	"errors"
 	"fmt"
-	"frame/tags"
 	"frame/yconf"
 	"os"
 	"sync/atomic"
@@ -60,6 +59,14 @@ func (ip *ImageProc) yconfConvert(inInt interface{}) (interface{}, error) {
 			outBP := &confBase{
 				Base: baseYAML.Base,
 				Path: path,
+
+				// Default the TagFile here.
+				TagFile: "tags.txt",
+			}
+
+			// Replace the default TagFile if set.
+			if baseYAML.TagFile != "" {
+				outBP.TagFile = baseYAML.TagFile
 			}
 
 			// If no check interval, default to 5 minutes
@@ -74,87 +81,8 @@ func (ip *ImageProc) yconfConvert(inInt interface{}) (interface{}, error) {
 				return nil, err
 			}
 
-			if len(baseYAML.Tags) > 0 {
-				outBP.Tags = make(tags.Tags, len(baseYAML.Tags))
-				for i, tag := range baseYAML.Tags {
-					outBP.Tags[i], err = ip.tm.Get(tag)
-					if err != nil {
-						return nil, err
-					}
-				}
-
-				// Now fix the tags - Sorting and removing any duplicates.
-				outBP.Tags = outBP.Tags.Fix()
-			}
-
 			// Set the map in the output base.
 			out.Bases[baseYAML.Base] = outBP
-		}
-	}
-
-	// Any paths defined?
-	if in.Paths != nil && len(in.Paths) > 0 {
-		if out.Bases == nil {
-			out.Bases = make(map[int]*confBase, 1)
-		}
-
-		for _, py := range in.Paths {
-			if len(py.Path) < 2 {
-				return nil, fmt.Errorf("Empty path")
-			}
-
-			if py.Base == 0 {
-				return nil, fmt.Errorf("Invalid Base in path %s", py.Path)
-			}
-
-			// If a path starts with '/', remove it.
-			// Paths are all relative to the base.
-			if py.Path[0] == '/' {
-				py.Path = py.Path[1:]
-			}
-
-			cp := &confPath{}
-
-			if len(py.Tags) > 0 {
-				cp.Tags = make(tags.Tags, len(py.Tags))
-				for i, tag := range py.Tags {
-					cp.Tags[i], err = ip.tm.Get(tag)
-					if err != nil {
-						return nil, err
-					}
-				}
-
-				// Now fix the tags - Sorting and removing any duplicates.
-				cp.Tags = cp.Tags.Fix()
-			}
-
-			// Lets get the base this path needs to be added to.
-			base, ok := out.Bases[py.Base]
-			if !ok {
-				base = &confBase{
-					Base:  py.Base,
-					Paths: make(map[string]*confPath, 1),
-				}
-				out.Bases[py.Base] = base
-			} else {
-				// Ensure it has a Paths map.
-				if base.Paths == nil {
-					base.Paths = make(map[string]*confPath, 1)
-				}
-			}
-
-			// Does this path already exist?
-			//
-			// Yeah, normally it shouldn't, but the YAML does it allow a whole lot of crazy things, so sanity is good.
-			if oldCP, ok := base.Paths[py.Path]; ok {
-				// It does, so just merge any tags to it.
-				for _, tag := range cp.Tags {
-					oldCP.Tags = oldCP.Tags.Add(tag)
-				}
-			} else {
-				// Doesn't already exist, so just add it.
-				base.Paths[py.Path] = cp
-			}
 		}
 	}
 
@@ -258,11 +186,6 @@ func yconfMerge(inAInt, inBInt interface{}) (interface{}, error) {
 					baseA.Base = id
 				}
 
-				// Merge any tags.
-				for _, id := range base.Tags {
-					baseA.Tags = baseA.Tags.Add(id)
-				}
-
 				// It is possible for paths within the base to be added before the base itself.
 				//
 				// This results in an empty main path for the base itself.
@@ -272,33 +195,17 @@ func yconfMerge(inAInt, inBInt interface{}) (interface{}, error) {
 					baseA.Path = base.Path
 				}
 
+				// TagFile changed?
+				if base.TagFile != baseA.TagFile {
+					baseA.TagFile = base.TagFile
+				}
+
 				// The CheckInterval can be 0, same type of logic as above.
 				// Paths added before the main base create an otherwise empty base.
 				if baseA.CheckInt == 0 {
 					baseA.CheckInt = base.CheckInt
 				}
 
-				// Paths within the base merging.
-				if base.Paths != nil {
-					if baseA.Paths == nil {
-						// A doesn't have paths, so just copy B's paths over.
-						baseA.Paths = base.Paths
-						continue
-					}
-
-					// Ok, so both have paths.
-					// Loop through base and merge the paths found within.
-					for path, cp := range base.Paths {
-						if ap, ok := baseA.Paths[path]; ok {
-							// Combine the tags
-							ap.Tags = ap.Tags.Combine(cp.Tags)
-							continue
-						}
-
-						// The path doesn't exist in baseA, so just copy it.
-						baseA.Paths[path] = cp
-					}
-				}
 				continue
 			}
 
@@ -380,24 +287,8 @@ func yconfChanged(origConfInt, newConfInt interface{}) bool {
 			return true
 		}
 
-		if !origBase.Tags.Equal(newBase.Tags) {
+		if origBase.TagFile != newBase.TagFile {
 			return true
-		}
-
-		if len(origBase.Paths) != len(newBase.Paths) {
-			return true
-		}
-
-		// Run through the paths
-		for opName, origPath := range origBase.Paths {
-			newPath, ok := newBase.Paths[opName]
-			if !ok {
-				return true
-			}
-
-			if !origPath.Tags.Equal(newPath.Tags) {
-				return true
-			}
 		}
 	}
 
@@ -452,8 +343,8 @@ func (ip *ImageProc) checkConf(co *conf, reload bool) (bool, uint64) {
 			return false, ucBits
 		}
 
-		if len(bc.Tags) < 1 {
-			fl.Warn().Int("base", id).Msg("Base needs at least 1 tag")
+		if bc.TagFile == "" {
+			fl.Warn().Int("base", id).Msg("Base has no tagfile")
 			return false, ucBits
 		}
 
@@ -640,11 +531,9 @@ func (ip *ImageProc) loadConf() error {
 		bc := ip.getBaseCache(base, ca)
 		bc.bMut.Lock()
 
-		if !bc.Tags.Equal(base.Tags) {
-			// Update the tags.
-			fl.Info().Int("base", base.Base).Msg("Tags Updated")
-			bc.Tags = base.Tags
-			bc.force = true
+		if bc.tagFile != base.TagFile {
+			fl.Info().Int("base", base.Base).Msg("TagFile Updated")
+			bc.tagFile = base.TagFile
 		}
 
 		if base.Path != bc.path {

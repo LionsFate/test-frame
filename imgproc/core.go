@@ -14,7 +14,6 @@
 package imgproc
 
 import (
-	"bufio"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -40,6 +39,7 @@ import (
 )
 
 var emptyTime = time.Time{}
+var noTagsPath = errors.New("No tags for path")
 
 // func getFileType {{{
 
@@ -235,55 +235,8 @@ func (ip *ImageProc) loadTagFile(cr *checkRun, pc *pathCache, file, image string
 	pc.updated |= upPathFI
 	fc.updated |= upSideTS
 
-	// Now open the sidecar for reading.
-	f, err := cr.bc.bfs.Open(name)
-	if err != nil {
-		fl.Err(err).Send()
-		return fmt.Errorf("open(%s): %s", name, err)
-	}
-
-	defer f.Close()
-
-	// Our new buffer for reading a single line at a time.
-	buf := bufio.NewReader(f)
-
-	for {
-		line, err := buf.ReadString('\n')
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-
-			fl.Err(err).Send()
-			return fmt.Errorf("read(%s): %w", name, err)
-		}
-
-		// Strip any spaces from tag.
-		line = strings.TrimSpace(line)
-
-		// Skip empty tags, as well as absurdly long tags (WTH dude?)
-		if line == "" || len(line) > 100 {
-			continue
-		}
-
-		// Get the tag from TagManager.
-		tag, err := ip.tm.Get(line)
-		if err != nil {
-			fl.Err(err).Send()
-			return err
-		}
-
-		// Zero tag? For some reason the TagManager doesn't care for this tag, so skip it.
-		if tag == 0 {
-			continue
-		}
-
-		// Add the tag
-		newTags = newTags.Add(tag)
-	}
-
-	// Fix the tags
-	newTags = newTags.Fix()
+	// Load the tags from the tagfile.
+	newTags, err = tags.LoadTagFile(cr.bc.bfs, name, ip.tm)
 
 	// Did the tags change?
 	if !fc.SideTG.Equal(newTags) {
@@ -358,8 +311,10 @@ func (ip *ImageProc) getFileCache(cr *checkRun, pc *pathCache, file string, modT
 
 // func ImageProc.getPathCache {{{
 
-func (ip *ImageProc) getPathCache(cr *checkRun, path string, inheritTags tags.Tags, inherit bool) (*pathCache, error) {
+func (ip *ImageProc) getPathCache(cr *checkRun, path string, inheritTags tags.Tags) (*pathCache, error) {
 	fl := ip.l.With().Str("func", "getPathCache").Int("base", cr.bc.Base).Str("path", path).Logger()
+
+	var inherit = false
 
 	// Get the path cache.
 	pc, ok := cr.bc.Paths[path]
@@ -404,24 +359,65 @@ func (ip *ImageProc) getPathCache(cr *checkRun, path string, inheritTags tags.Ta
 		pc.updated |= upPathTS
 	}
 
-	// Before we check the tags, does this path have specifically configured tags?
-	cp, ok := cr.cb.Paths[path]
-	if ok {
-		if len(cp.Tags) > 0 {
-			// Force inherit so we set the tags properly.
-			inherit = true
-			inheritTags = cp.Tags
-		}
+	// This path have a tag file in it?
+	tf, err := cr.bc.bfs.Open(cr.bc.tagFile)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		fl.Err(err).Str("tagfile", cr.bc.tagFile).Msg("tfOpen")
+		return nil, err
 	}
 
-	// Do we check the inherited tags?
+	// The error can still be ErrNotExist(), so just ensure we have
+	// no error before we go further along with the tag file.
+	if err == nil {
+		tfStat, err := tf.Stat()
+		if err != nil {
+			tf.Close()
+			fl.Err(err).Msg("tfstat")
+			return nil, fmt.Errorf("tfstat(%s): %w", path, err)
+		}
+
+		tfMTime := tfStat.ModTime().Round(time.Millisecond)
+
+		if !tfMTime.Equal(pc.SideTS) {
+			// Load the tag file here!
+			tags, err := tags.LoadTagFile(cr.bc.bfs, cr.bc.tagFile, ip.tm)
+			if err != nil {
+				fl.Err(err).Msg("LoadTagFile")
+				return nil, err
+			}
+
+			fl.Info().Msg("TagFile changed")
+			pc.updated |= upPathTG
+			pc.SideTS = tfMTime
+
+			pc.Tags = tags
+		}
+
+		tf.Close()
+
+		// We got the tags from the file, so no inherit from our parent path.
+		inherit = false
+	}
+
+	// Do we inherit our parents tags?
 	if inherit {
+		// This should only happen when the base path "." itself has no tags.
+		if inheritTags == nil {
+			fl.Err(noTagsPath).Msg("inheritTags")
+			return nil, noTagsPath
+		}
+
 		// Did the tags change?
 		if !inheritTags.Equal(pc.Tags) {
 			fl.Info().Msg("Tags changed")
 			pc.updated |= upPathTG
 			pc.Tags = inheritTags
 		}
+	}
+
+	if pc.Tags == nil || len(pc.Tags) == 0 {
+		fl.Err(noTagsPath).Msg("base")
+		return nil, noTagsPath
 	}
 
 	fl.Debug().Send()
@@ -438,7 +434,7 @@ func (ip *ImageProc) checkPathPartial(cr *checkRun, path string) error {
 	// or not on it.
 	//
 	// Now lets see if the path has been modified or not.
-	pc, err := ip.getPathCache(cr, path, tags.Tags{}, false)
+	pc, err := ip.getPathCache(cr, path, nil)
 	if err != nil {
 		fl.Err(err).Msg("getPathCache")
 		return err
@@ -512,7 +508,7 @@ func (ip *ImageProc) checkBasePath(cr *checkRun, pc *pathCache, path string, ful
 			}
 
 			// Either a full, or not in the cache.
-			npc, err := ip.getPathCache(cr, npath, pc.Tags, true)
+			npc, err := ip.getPathCache(cr, npath, pc.Tags)
 			if err != nil {
 				return err
 			}
@@ -857,7 +853,7 @@ func (ip *ImageProc) checkBase(bc *baseCache) {
 	// Is this a forced full loop?
 	if bc.force {
 		// A full loop means check every path, every file (at least a stat for the modified time) for changes.
-		pc, err := ip.getPathCache(cr, ".", bc.Tags, true)
+		pc, err := ip.getPathCache(cr, ".", nil)
 		if err != nil {
 			fl.Err(err).Msg("getPathCache")
 			return
@@ -1176,7 +1172,7 @@ func (ip *ImageProc) updateDBPath(tx pgx.Tx, cr *checkRun, pc *pathCache) error 
 
 	// Is this a new path?
 	if pc.id == 0 {
-		if err := tx.QueryRow(ip.ctx, "paths-insert", cr.bc.Base, pc.Path, pc.Changed, pc.Tags).Scan(&pc.id); err != nil {
+		if err := tx.QueryRow(ip.ctx, "paths-insert", cr.bc.Base, pc.Path, pc.Changed, pc.Tags, pc.SideTS).Scan(&pc.id); err != nil {
 			fl.Err(err).Str("path", pc.Path).Msg("insert path")
 			return err
 		}
@@ -1186,7 +1182,7 @@ func (ip *ImageProc) updateDBPath(tx pgx.Tx, cr *checkRun, pc *pathCache) error 
 		// Existing path - So anything to update?
 		if pc.updated&(upPathTG|upPathTS) != 0 {
 			// Update the row
-			if _, err := tx.Exec(ip.ctx, "paths-update", pc.id, pc.Changed, pc.Tags); err != nil {
+			if _, err := tx.Exec(ip.ctx, "paths-update", pc.id, pc.Changed, pc.Tags, pc.SideTS); err != nil {
 				fl.Err(err).Uint64("pid", pc.id).Msg("update path")
 				return err
 			}
@@ -1228,10 +1224,10 @@ func (ip *ImageProc) loadCache() error {
 	for bid, cb := range co.Bases {
 		// Create our base cache
 		bc := &baseCache{
-			Base:  bid,
-			Tags:  cb.Tags,
-			path:  cb.Path,
-			Paths: make(map[string]*pathCache, 1),
+			Base:    bid,
+			path:    cb.Path,
+			tagFile: cb.TagFile,
+			Paths:   make(map[string]*pathCache, 1),
 		}
 
 		// Since we are replacing the baseCache, we need to ensure its fs.FS is set correctly as well.
@@ -1250,7 +1246,7 @@ func (ip *ImageProc) loadCache() error {
 		// Loop through our paths
 		for pathRows.Next() {
 			// Get the values
-			if err := pathRows.Scan(&inID, &name, &changed, &tgs); err != nil {
+			if err := pathRows.Scan(&inID, &name, &changed, &tgs, &sidets); err != nil {
 				pathRows.Close()
 				fl.Err(err).Msg("paths-select-rows-scan")
 				return err
@@ -1264,6 +1260,7 @@ func (ip *ImageProc) loadCache() error {
 				id:      inID,
 				Path:    name,
 				Tags:    tgs.Copy(),
+				SideTS:  sidets,
 				Changed: changed,
 				Files:   make(map[string]*fileCache, 1),
 			}
@@ -1464,7 +1461,6 @@ func (ip *ImageProc) getBaseCache(cb *confBase, ca *cache) *baseCache {
 	// Base is not there, so lets add it.
 	bc := &baseCache{
 		Base:  cb.Base,
-		Tags:  cb.Tags,
 		path:  cb.Path,
 		Paths: make(map[string]*pathCache, 1),
 	}

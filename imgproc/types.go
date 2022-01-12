@@ -16,7 +16,6 @@ import (
 
 type confBaseYAML struct {
 	Base int      `yaml:"base"`
-	Tags []string `yaml:"tags"`
 
 	// The time between when we check the base for changes.
 	// Minimum is 30 seconds for sanity, no maximum.
@@ -25,12 +24,18 @@ type confBaseYAML struct {
 	//
 	// This is anything valid that time.ParseDuration() accepts.
 	CheckInt string `yaml:"checkinterval"`
-}
 
-type confPathYAML struct {
-	Path string   `yaml:"path"`
-	Base int      `yaml:"base"`
-	Tags []string `yaml:"tags"`
+	// The name of the file within the path that contains all tags
+	// for that path and any subdirectories within.
+	//
+	// Each subdirectory can have their own tag file that will replace
+	// all tags for that and further subdirectories.
+	//
+	// This is defaulted to "tags.txt" in yconfConvert() if not set.
+	//
+	// Each base *must* have at least 1 tagfile for its root path.
+	// Subdirectory tag files are optional.
+	TagFile string `yaml:"tagfile"`
 }
 
 type confQueries struct {
@@ -53,19 +58,13 @@ type confYAML struct {
 	ImageCache    string                   `yaml:"imagecache"`
 	Queries       *confQueries             `yaml:"queries"`
 	Bases         map[string]*confBaseYAML `yaml:"bases"`
-	Paths         []*confPathYAML          `yaml:"paths"`
-}
-
-type confPath struct {
-	Tags tags.Tags
 }
 
 type confBase struct {
 	Base     int
 	Path     string
-	Tags     tags.Tags
+	TagFile  string
 	CheckInt time.Duration
-	Paths    map[string]*confPath
 }
 
 type conf struct {
@@ -235,6 +234,9 @@ type pathCache struct {
 	Path    string
 	Changed time.Time
 
+	// If there is a tagfile for this path.
+	SideTS time.Time
+
 	Tags tags.Tags
 
 	Files map[string]*fileCache
@@ -292,7 +294,7 @@ type baseCache struct {
 
 	Checked time.Time
 
-	Tags tags.Tags
+	tagFile string
 
 	// The original path to bfs from the configuration, used only to check for changes.
 	path string
