@@ -175,6 +175,7 @@ const (
 	upPathTG = 1 << iota // Tags for the path itself changed
 	upPathTS = 1 << iota // The directory modified time
 	upPathFI = 1 << iota // Files within a path changed
+	upPathNL = 1 << iota // Path not seen this loop, disable it
 ) // }}}
 
 // type fileCache struct {{{

@@ -126,14 +126,9 @@ func New(confPath string, tm types.TagManager, l *zerolog.Logger, ctx context.Co
 	// Load our configuration.
 	//
 	// This also ensures that ip.getConf() can not fail.
-	if err := ip.loadConf(); err != nil {
-		return nil, err
-	}
-
-	// loadConf() above already connected to the database and setup our prepared statements, but it didn't load the cache.
 	//
-	// So handle that aspect here.
-	if err := ip.loadCache(); err != nil {
+	// This also loads the initial cache from the database.
+	if err := ip.loadConf(); err != nil {
 		return nil, err
 	}
 
@@ -580,6 +575,8 @@ func (ip *ImageProc) checkHashTagsDB(cr *checkRun) error {
 		//
 		// We don't delete the path here, that happens in cleanCache().
 		if pc.loop != loop {
+			pc.updated |= upPathNL
+
 			// Ensure the database removes the path (and files) properly.
 			if err := ip.updateDBPF(cr, pc); err != nil {
 				fl.Err(err).Msg("updateDBPF")
@@ -1196,14 +1193,19 @@ func (ip *ImageProc) updateDBPath(tx pgx.Tx, cr *checkRun, pc *pathCache) error 
 // func ImageProc.loadCache {{{
 
 // Loads the cache from the database.
+// 
+// Typically called whenever the datbase connection or queries change.
 //
-// As this is meant to be called from the start of the program, it will replace any existing cache without care.
-func (ip *ImageProc) loadCache() error {
-	var inID uint64
-	var name, hash string
-	var changed, sidets time.Time
-	var tgs, sideTags tags.Tags
-
+// Meant to flush the cache and re-create from scratch.
+//
+// Note that when this happens, if something messes up this puts us in a situation
+// or basically no automatic recovery.
+//
+// We can not continue to use the old cache since we may no longer be talking
+// to that database or using those queries.
+//
+// So the cache is wiped, and we attempt to load everything from scratch.
+func (ip *ImageProc) loadCache(co *conf) error {
 	fl := ip.l.With().Str("func", "loadCache").Logger()
 
 	// Lets load all the paths from the database first.
@@ -1213,120 +1215,18 @@ func (ip *ImageProc) loadCache() error {
 		return err
 	}
 
-	// Lets loop through our configured bases and create our cache.
-	co := ip.getConf()
 	ca := ip.ca
 
 	// We are pretty much replacing the entire cache here, so just get a lock over it until we are done.
 	ca.cMut.Lock()
 	defer ca.cMut.Unlock()
 
-	for bid, cb := range co.Bases {
-		// Create our base cache
-		bc := &baseCache{
-			Base:    bid,
-			path:    cb.Path,
-			tagFile: cb.TagFile,
-			Paths:   make(map[string]*pathCache, 1),
-		}
+	// Just wipe the old cache, we are replacing the whole thing here.
+	ca.bases = make(map[int]*baseCache, 1)
 
-		// Since we are replacing the baseCache, we need to ensure its fs.FS is set correctly as well.
-		bc.bfs = os.DirFS(cb.Path)
-
-		// Set our base cache
-		ca.bases[bid] = bc
-
-		// And now run through the paths
-		pathRows, err := db.Query(ip.ctx, "paths-select", bid)
-		if err != nil {
-			fl.Err(err).Msg("paths-select")
+	for _, cb := range co.Bases {
+		if err := ip.addBaseCache(cb, ca, db); err != nil {
 			return err
-		}
-
-		// Loop through our paths
-		for pathRows.Next() {
-			// Get the values
-			if err := pathRows.Scan(&inID, &name, &changed, &tgs, &sidets); err != nil {
-				pathRows.Close()
-				fl.Err(err).Msg("paths-select-rows-scan")
-				return err
-			}
-
-			// Fix the tags first
-			tgs = tgs.Fix()
-
-			// Now add the path to our cache.
-			pc := &pathCache{
-				id:      inID,
-				Path:    name,
-				Tags:    tgs.Copy(),
-				SideTS:  sidets,
-				Changed: changed,
-				Files:   make(map[string]*fileCache, 1),
-			}
-
-			// Now add the path to our cache
-			bc.Paths[name] = pc
-		}
-
-		if pathRows.Err() != nil {
-			pathRows.Close()
-			err := pathRows.Err()
-			fl.Err(err).Msg("paths-select-rows-done")
-			return err
-		}
-
-		// Done with the paths
-		pathRows.Close()
-
-		// Now we loop through all the paths we just loaded and get all the files for each to cache.
-		for _, pc := range bc.Paths {
-			fileRows, err := db.Query(ip.ctx, "files-select", pc.id)
-			if err != nil {
-				fl.Err(err).Msg("files-select")
-				return err
-			}
-
-			// Loop through our paths
-			for fileRows.Next() {
-				// Get the values
-				//
-				// Default query I used for development -
-				//
-				//   SELECT fid, name, filets, hash, sidets, sidetags, tags FROM files.files WHERE pid = $1 AND enabled
-				if err := fileRows.Scan(&inID, &name, &changed, &hash, &sidets, &sideTags, &tgs); err != nil {
-					fileRows.Close()
-					fl.Err(err).Msg("files-select-rows-scan")
-					return err
-				}
-
-				// Fix our tags
-				sideTags = sideTags.Fix()
-				tgs = tgs.Fix()
-
-				// Create our file cache
-				fc := &fileCache{
-					id:     inID,
-					Name:   name,
-					Hash:   hash,
-					FileTS: changed,
-					SideTS: sidets,
-					SideTG: sideTags.Copy(),
-					CTags:  tgs.Copy(),
-				}
-
-				pc.Files[name] = fc
-			}
-
-			if fileRows.Err() != nil {
-				fileRows.Close()
-				err := fileRows.Err()
-				fl.Err(err).Msg("files-select-rows-done")
-				return err
-			}
-
-			// Done with the files
-			fileRows.Close()
 		}
 	}
 
@@ -1440,12 +1340,22 @@ func (ip *ImageProc) checkAll() {
 	return
 } // }}}
 
-// func ImageProc.getBaseCache {{{
+// func ImageProc.addBaseCache {{{
 
 // This gets (or adds if not already there) a baseCache for the specific Base.
 //
+// This adds (if not in cache already) the baseCache and appropriate 
+// path and file caches from the database.
+//
+// This will replace any possibly existing cache for the base.
+//
 // This assumes you already have a lock on the cache passed in.
-func (ip *ImageProc) getBaseCache(cb *confBase, ca *cache) *baseCache {
+func (ip *ImageProc) addBaseCache(cb *confBase, ca *cache, db *pgxpool.Pool) error {
+	var inID uint64
+	var name, hash string
+	var changed, sidets time.Time
+	var tgs, sideTags tags.Tags
+
 	fl := ip.l.With().Str("func", "addBaseCache").Logger()
 
 	if ca == nil || cb == nil {
@@ -1453,16 +1363,17 @@ func (ip *ImageProc) getBaseCache(cb *confBase, ca *cache) *baseCache {
 		return nil
 	}
 
-	// Is the cache already there?
-	if bc, ok := ca.bases[cb.Base]; ok {
-		return bc
-	}
+	fl = fl.With().Int("base", cb.Base).Logger()
 
-	// Base is not there, so lets add it.
+	// Don't care if the cache already exists or not, just replace.
+	//
+	// This can happen if we switch database or just want to refresh
+	// the whole thing.
 	bc := &baseCache{
-		Base:  cb.Base,
-		path:  cb.Path,
-		Paths: make(map[string]*pathCache, 1),
+		Base:    cb.Base,
+		path:    cb.Path,
+		tagFile: cb.TagFile,
+		Paths:   make(map[string]*pathCache, 1),
 	}
 
 	bc.bfs = os.DirFS(cb.Path)
@@ -1470,9 +1381,102 @@ func (ip *ImageProc) getBaseCache(cb *confBase, ca *cache) *baseCache {
 	// Add to the cache.
 	ca.bases[bc.Base] = bc
 
-	fl.Debug().Int("base", bc.Base).Msg("Added base")
+	// Load any paths already in the database.
+	pathRows, err := db.Query(ip.ctx, "paths-select", bc.Base)
+	if err != nil {
+		fl.Err(err).Msg("paths-select")
+		return err
+	}
 
-	return bc
+	// Loop through our paths
+	for pathRows.Next() {
+		// Get the values
+		if err := pathRows.Scan(&inID, &name, &changed, &tgs, &sidets); err != nil {
+			pathRows.Close()
+			fl.Err(err).Msg("paths-select-rows-scan")
+			return err
+		}
+
+		// Fix the tags first
+		tgs = tgs.Fix()
+
+		// Now add the path to our cache.
+		pc := &pathCache{
+			id:      inID,
+			Path:    name,
+			Tags:    tgs.Copy(),
+			SideTS:  sidets,
+			Changed: changed,
+			Files:   make(map[string]*fileCache, 1),
+		}
+
+		// Now add the path to our cache
+		bc.Paths[name] = pc
+	}
+
+	if pathRows.Err() != nil {
+		pathRows.Close()
+		err := pathRows.Err()
+		fl.Err(err).Msg("paths-select-rows-done")
+		return err
+	}
+
+	// Done with the paths
+	pathRows.Close()
+
+	// Now we loop through all the paths we just loaded and get all the files for each to cache.
+	for _, pc := range bc.Paths {
+		fileRows, err := db.Query(ip.ctx, "files-select", pc.id)
+		if err != nil {
+			fl.Err(err).Msg("files-select")
+			return err
+		}
+
+		// Loop through our paths
+		for fileRows.Next() {
+			// Get the values
+			//
+			// Default query I used for development -
+			//
+			//   SELECT fid, name, filets, hash, sidets, sidetags, tags FROM files.files WHERE pid = $1 AND enabled
+			if err := fileRows.Scan(&inID, &name, &changed, &hash, &sidets, &sideTags, &tgs); err != nil {
+				fileRows.Close()
+				fl.Err(err).Msg("files-select-rows-scan")
+				return err
+			}
+
+			// Fix our tags
+			sideTags = sideTags.Fix()
+			tgs = tgs.Fix()
+
+			// Create our file cache
+			fc := &fileCache{
+				id:     inID,
+				Name:   name,
+				Hash:   hash,
+				FileTS: changed,
+				SideTS: sidets,
+				SideTG: sideTags.Copy(),
+				CTags:  tgs.Copy(),
+			}
+
+			pc.Files[name] = fc
+		}
+
+		if fileRows.Err() != nil {
+			fileRows.Close()
+			err := fileRows.Err()
+			fl.Err(err).Msg("files-select-rows-done")
+			return err
+		}
+
+		// Done with the files
+		fileRows.Close()
+	}
+
+	fl.Debug().Msg("Added base")
+
+	return nil
 } // }}}
 
 // func ImageProc.makeCheckIntervals {{{

@@ -521,14 +521,35 @@ func (ip *ImageProc) loadConf() error {
 		return err
 	}
 
+	// We need a new database connection before we can add the cache. 
+	db, err := ip.dbConnect(co)
+	if err != nil {
+		fl.Err(err).Str("db", co.Database).Msg("new dbConnect")
+		return err
+	}
+
 	// Get the cache so we can add the bases to it.
 	ca := ip.ca
 
 	// As we are going to potentially be adding to the bases map, we need the lock.
 	ca.cMut.Lock()
+	defer ca.cMut.Unlock()
 
 	for _, base := range co.Bases {
-		bc := ip.getBaseCache(base, ca)
+		// Ensure we have a base cache
+		if err := ip.addBaseCache(base, ca, db); err != nil {
+			fl.Err(err).Msg("base-check")
+			return err
+		}
+
+		// This should not be able to fail.
+		bc, ok := ca.bases[base.Base]
+		if !ok {
+			err := errors.New("missing cb.bases")
+			fl.Err(err).Send()
+			return err
+		}
+
 		bc.bMut.Lock()
 
 		if bc.tagFile != base.TagFile {
@@ -547,22 +568,11 @@ func (ip *ImageProc) loadConf() error {
 		bc.bMut.Unlock()
 	}
 
-	// Yep, so go ahead and create a new connection and get it prepared to replace the existing one.
-	db, err := ip.dbConnect(co)
-	if err != nil {
-		ca.cMut.Unlock()
-		fl.Err(err).Str("db", co.Database).Msg("new dbConnect")
-		return err
-	}
-
 	// Set the new DB
 	ip.db.Store(db)
 
-	// Looks good, go ahead and store it.
+	// Store the configuration.
 	ip.co.Store(co)
-
-	// Release the lock after the new configuration has been set.
-	ca.cMut.Unlock()
 
 	return nil
 } // }}}
@@ -611,6 +621,11 @@ func (ip *ImageProc) notifyConf() {
 
 		if ucBits&ucDBQuery != 0 {
 			ucBits ^= ucDBQuery
+		}
+
+		// As something changed with the database, we need to refresh our cache.
+		if err := ip.loadCache(co); err != nil {
+			fl.Err(err).Msg("refreshing cache")
 		}
 	}
 
