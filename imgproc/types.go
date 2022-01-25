@@ -15,7 +15,7 @@ import (
 )
 
 type confBaseYAML struct {
-	Base int      `yaml:"base"`
+	Base int `yaml:"base"`
 
 	// The time between when we check the base for changes.
 	// Minimum is 30 seconds for sanity, no maximum.

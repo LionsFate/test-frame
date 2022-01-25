@@ -310,6 +310,7 @@ func (ip *ImageProc) getPathCache(cr *checkRun, path string, inheritTags tags.Ta
 	fl := ip.l.With().Str("func", "getPathCache").Int("base", cr.bc.Base).Str("path", path).Logger()
 
 	var inherit = false
+	var pathTF string
 
 	// Get the path cache.
 	pc, ok := cr.bc.Paths[path]
@@ -354,10 +355,18 @@ func (ip *ImageProc) getPathCache(cr *checkRun, path string, inheritTags tags.Ta
 		pc.updated |= upPathTS
 	}
 
+	// If we are the root path then its just the tagfile name.
+	// Otherwise we add the "path/" before the tagfile.
+	if path == "." {
+		pathTF = cr.bc.tagFile
+	} else {
+		pathTF = path + "/" + cr.bc.tagFile
+	}
+
 	// This path have a tag file in it?
-	tf, err := cr.bc.bfs.Open(cr.bc.tagFile)
+	tf, err := cr.bc.bfs.Open(pathTF)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		fl.Err(err).Str("tagfile", cr.bc.tagFile).Msg("tfOpen")
+		fl.Err(err).Str("tagfile", pathTF).Msg("tfOpen")
 		return nil, err
 	}
 
@@ -375,7 +384,7 @@ func (ip *ImageProc) getPathCache(cr *checkRun, path string, inheritTags tags.Ta
 
 		if !tfMTime.Equal(pc.SideTS) {
 			// Load the tag file here!
-			tags, err := tags.LoadTagFile(cr.bc.bfs, cr.bc.tagFile, ip.tm)
+			tags, err := tags.LoadTagFile(cr.bc.bfs, pathTF, ip.tm)
 			if err != nil {
 				fl.Err(err).Msg("LoadTagFile")
 				return nil, err
@@ -1193,7 +1202,7 @@ func (ip *ImageProc) updateDBPath(tx pgx.Tx, cr *checkRun, pc *pathCache) error 
 // func ImageProc.loadCache {{{
 
 // Loads the cache from the database.
-// 
+//
 // Typically called whenever the datbase connection or queries change.
 //
 // Meant to flush the cache and re-create from scratch.
@@ -1344,7 +1353,7 @@ func (ip *ImageProc) checkAll() {
 
 // This gets (or adds if not already there) a baseCache for the specific Base.
 //
-// This adds (if not in cache already) the baseCache and appropriate 
+// This adds (if not in cache already) the baseCache and appropriate
 // path and file caches from the database.
 //
 // This will replace any possibly existing cache for the base.

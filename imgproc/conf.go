@@ -521,7 +521,7 @@ func (ip *ImageProc) loadConf() error {
 		return err
 	}
 
-	// We need a new database connection before we can add the cache. 
+	// We need a new database connection before we can add the cache.
 	db, err := ip.dbConnect(co)
 	if err != nil {
 		fl.Err(err).Str("db", co.Database).Msg("new dbConnect")
