@@ -188,13 +188,7 @@ CREATE TABLE IF NOT EXISTS files (
 	-- When the sidecar/tagfile was last changed.
 	sidets timestamptz NOT NULL DEFAULT NOW(),
 
-	-- File tags, loaded from EXIF data within the file itself.
-	-- Valid only for JPEG files that have meta data.
-	--
-	-- Expected to be empty for the majority of files, especially if you mostly use .png or .gif files.
-	filetags bigint[],
-
-	-- Sidecar tags, loaded from a .txt or .xmp sidecar file.
+	-- Sidecar tags, loaded from a .txt sidecar file.
 	--
 	-- Can be empty so long as either the file or the path has at least 1 tag.
 	sidetags bigint[],
@@ -229,6 +223,21 @@ CREATE TABLE IF NOT EXISTS files (
 );
 
 ALTER TABLE IF EXISTS files OWNER TO frame;
+
+CREATE OR REPLACE FUNCTION files_upd() RETURNS trigger
+	LANGUAGE plpgsql SECURITY DEFINER
+	AS $$
+		BEGIN
+			IF NEW.filets != OLD.filets OR NEW.sidets != OLD.sidets OR NEW.sidetags != OLD.sidetags OR NEW.tags != OLD.tags THEN
+				NEW.updated = NOW();
+			END IF;
+			RETURN NEW;
+		END;
+	$$;
+
+ALTER FUNCTION files_upd() OWNER TO frame ;
+
+CREATE TRIGGER files_upd BEFORE INSERT OR UPDATE ON files.files FOR EACH ROW EXECUTE FUNCTION files_upd();
 
 CREATE TABLE IF NOT EXISTS merged (
 	mid bigserial PRIMARY KEY,
