@@ -6,6 +6,7 @@ import (
 	"frame/tags"
 	"frame/types"
 	"frame/yconf"
+	"math/rand"
 	"sync/atomic"
 	"time"
 
@@ -143,6 +144,7 @@ func New(confPath string, tm types.TagManager, l *zerolog.Logger, ctx context.Co
 
 	we := &Weighter{
 		l:     l.With().Str("mod", "weighter").Logger(),
+		r:     rand.New(rand.NewSource(time.Now().UnixNano())),
 		tm:    tm,
 		cPath: confPath,
 		ctx:   ctx,
@@ -177,6 +179,148 @@ func New(confPath string, tm types.TagManager, l *zerolog.Logger, ctx context.Co
 	fl.Debug().Send()
 
 	return we, nil
+} // }}}
+
+// func wProfile.loadCP {{{
+
+func (wp *wProfile) loadCP() (*cacheProfile, error) {
+	fl := wp.we.l.With().Str("func", "loadCP").Logger()
+
+	// Attempt to load the existing cacheProfile
+	cp, ok := wp.cp.Load().(*cacheProfile)
+
+	// The one we have stored still good?
+	if ok && atomic.LoadUint32(&cp.closed) == 0 {
+		fl.Debug().Str("profile", cp.profile).Msg("loaded")
+		// Perfect, return away.
+		return cp, nil
+	}
+
+	// The one we have stored is invalid somehow, so lets get a new one.
+	//
+	// Get the cache
+	ca := wp.we.ca
+
+	// Get a lock on the cache
+	ca.pMut.RLock()
+	defer ca.pMut.RUnlock()
+
+	// Does the profile exist?
+	//
+	// We do not check if it is closed or not here since we have
+	// a read lock. It can not be closed while we have the lock.
+	if cp, ok := ca.profiles[cp.profile]; ok {
+		fl.Debug().Str("profile", cp.profile).Msg("found")
+
+		// Found a newer one, so replace our stored one.
+		wp.cp.Store(cp)
+		return cp, nil
+	}
+
+	// No valid one can be found.
+	// This can happen if a profile is valid and then the configuration
+	// changes, making the profile now invalid.
+	//
+	// Normal part of operations and should be handled.
+	//
+	// As a result, we do not log your typical error here.
+	err := errors.New("invalid profile")
+	fl.Debug().Err(err).Send()
+	return nil, err
+} // }}}
+
+// func wProfile.Get {{{
+
+func (wp *wProfile) Get() (uint64, error) {
+	cp, err := wp.loadCP()
+	if err != nil {
+		return 0, err
+	}
+
+	ids := wp.we.getRandomProfile(cp, 1)
+	return ids[0], nil
+} // }}}
+
+// func wProfile.GetMulti {{{
+
+func (wp *wProfile) GetMulti(num uint8) ([]uint64, error) {
+	cp, err := wp.loadCP()
+	if err != nil {
+		return nil, err
+	}
+
+	// For sanity we cap the number at 100.
+	if num > 100 {
+		num = 100
+	}
+
+	ids := wp.we.getRandomProfile(cp, num)
+	return ids, nil
+} // }}}
+
+// func Weighter.getRandomProfile {{{
+
+func (we *Weighter) getRandomProfile(cp *cacheProfile, num uint8) []uint64 {
+	r := we.r
+	
+	ids := make([]uint64, num)
+	for i := uint8(0); i < num; i++ {
+		// Get the random weight to use.
+		weight := r.Intn(cp.maxRoll)
+
+		// Find the matching weight.
+		for _, wl := range cp.weights {
+			// Is the weight we are looking at less then what we want?
+			if wl.Weight+wl.Start < weight {
+				continue
+			}
+
+			// This one matches. So lets grab a random file within.
+			
+			ids[i] = wl.IDs[r.Intn(len(wl.IDs))]
+			break
+		}
+	}
+
+	return ids
+} // }}}
+
+// func Weighter.GetProfile {{{
+
+func (we *Weighter) GetProfile(pr string) (types.WeighterProfile, error) {
+	fl := we.l.With().Str("func", "GetProfile").Logger()
+
+	if pr == "" {
+		err := errors.New("invalid profile")
+		fl.Err(err)
+		return nil, err
+	}
+
+	ca := we.ca
+
+	// Get a lock on the cache
+	ca.pMut.RLock()
+	defer ca.pMut.RUnlock()
+
+	// Does the profile exist?
+	//
+	// We do not check if it is closed or not here since we have
+	// a read lock. It can not be closed while we have the lock.
+	if cp, ok := ca.profiles[pr]; ok {
+		fl.Debug().Str("profile", pr).Msg("found")
+		// Alright, here you go.
+		wp := &wProfile{
+			we: we,
+		}
+
+		// We use atomic.Value to make multiple goroutines a lot easier.
+		wp.cp.Store(cp)
+		return wp, nil
+	}
+
+	err := errors.New("profile not found")
+	fl.Err(err)
+	return nil, err
 } // }}}
 
 // func Weighter.makeProfileWeights {{{
@@ -229,14 +373,22 @@ func (we *Weighter) makeProfileWeights(ca *cache) error {
 	ca.pMut.Lock()
 	defer ca.pMut.Unlock()
 
+	// The existing profiles map, as we are going to just
+	// create a new one here, but we need to invalidate the old ones
+	// after the new ones are ready.
+	oldProfiles := ca.profiles
+
+	// Create the new profiles map.
+	ca.profiles = make(map[string]*cacheProfile, len(tpMap))
+
 	// Go through each profile with at least 1 image in tpMap and add it properly to the cache.
 	for pName, weightMap := range tpMap {
 		start := 0
 		ncp := &cacheProfile{
-			Profile: pName,
+			profile: pName,
 		}
 
-		ncp.Weights = make([]*weightList, 0, len(weightMap))
+		ncp.weights = make([]*weightList, 0, len(weightMap))
 
 		// Now run through the weights.
 		for weight, ids := range weightMap {
@@ -246,14 +398,30 @@ func (we *Weighter) makeProfileWeights(ca *cache) error {
 				IDs: ids,
 			}
 
-			ncp.Weights = append(ncp.Weights, wl)
+			ncp.weights = append(ncp.weights, wl)
 
 			// The starting weight for the next
 			start += weight
 
 			// Adjust the maximum weight to roll
-			ncp.MaxRoll = start
+			ncp.maxRoll = start
 		}
+
+		// Cache the new profile.
+		ca.profiles[pName] = ncp
+	}
+
+	// We have a lock on the profiles map, however any WeighterProfile
+	// we have given out via Weighter.Get() has a pointer to the individual
+	// cacheProfiles.
+	//
+	// We need to invalidate those, so they will lookup the new cacheProfile
+	// from the map we are updating here.
+	//
+	// Loop through the old ones here and invalidate all of them now that the
+	// new ones are all ready.
+	for _, oldProf := range oldProfiles {
+		atomic.StoreUint32(&oldProf.closed, 1)
 	}
 
 	fl.Debug().Send()

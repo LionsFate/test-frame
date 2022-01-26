@@ -8,12 +8,14 @@ import (
 	"frame/imgproc"
 	"frame/tagmanager"
 	"frame/types"
+	"frame/weighter"
 	"frame/yconf"
-	"github.com/rs/zerolog"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 // func usage {{{
@@ -24,6 +26,9 @@ func usage() {
 	os.Exit(-1)
 } // }}}
 
+// Note that at least one of the optional services must be enabled.
+//
+// Those being: ImageProc, CacheMerge or Weighter.
 type confFile struct {
 	// File/Path to the TagManager configuration, passed in to tagmanager.New()
 	//
@@ -32,13 +37,18 @@ type confFile struct {
 
 	// Configuration path for ImageProc.
 	//
-	// Optional - If left empty, ImageProc will not be loaded.
+	// Optional - If left empty ImageProc will not be loaded.
 	ImageProc string `yaml:"imageproc"`
 
 	// Configuration path for CMerge
 	//
-	// Optional - If left empty, CMerge will not be loaded.
+	// Optional - If left empty CMerge will not be loaded.
 	CacheMerge string `yaml:"cachemerge"`
+
+	// Configure path for Weighter
+	//
+	// Optional - If left empty Weighter will not be loaded.
+	Weighter string `yaml:"weighter"`
 
 	// The path for the hourly log file to be written.
 	// STDOUT and STDERR will be redirected to this file.
@@ -54,6 +64,7 @@ type frame struct {
 	tm      types.TagManager
 	ip      *imgproc.ImageProc
 	cm      *cmerge.CMerge
+	we      types.Weighter
 	curHour int32
 	yc      *yconf.YConf
 	ctx     context.Context
@@ -188,8 +199,20 @@ func main() {
 		}
 	}
 
+	// Load CacheMerge?
 	if f.co.CacheMerge != "" {
 		f.cm, err = cmerge.New(f.co.CacheMerge, f.tm, &f.l, f.ctx)
+		if err != nil {
+			f.cm = nil
+			f.l.Err(err).Msg("CMerge")
+			f.close()
+			os.Exit(-1)
+		}
+	}
+
+	// Load the Weighter?
+	if f.co.Weighter != "" {
+		f.we, err = weighter.New(f.co.Weighter, f.tm, &f.l, f.ctx)
 		if err != nil {
 			f.cm = nil
 			f.l.Err(err).Msg("CMerge")

@@ -5,6 +5,7 @@ import (
 	"frame/tags"
 	"frame/types"
 	"frame/yconf"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -55,6 +56,10 @@ type Weighter struct {
 	// Once created it is read-only, and fully replaced when it changes (not modified).
 	white atomic.Value
 
+	// Random number generator for getting random hashes.
+	// See getRandomProfile() for usage.
+	r *rand.Rand
+
 	// Used to control shutting down background goroutines.
 	ctx context.Context
 } // }}}
@@ -63,6 +68,13 @@ type confQueries struct {
 	Full string `yaml:"full"`
 	Poll string `yaml:"poll"`
 }
+
+// type wProfile struct {{{
+
+type wProfile struct {
+	we *Weighter
+	cp atomic.Value
+} // }}}
 
 // type cacheImage struct {{{
 
@@ -99,7 +111,7 @@ type weightList struct {
 
 type cacheProfile struct {
 	// The profile name
-	Profile string
+	profile string
 
 	// So details on how this works -
 	//
@@ -113,12 +125,17 @@ type cacheProfile struct {
 	//
 	// Once we've found the right weightList to use, we just choose a random number between
 	// 0 and len(weightList.IDs) to pick the actual image to use within that weight.
-	Weights []*weightList
+	weights []*weightList
 
-	MaxRoll int
+	maxRoll int
 
 	// The TagRule that must apply for this image to be considered for inclusion in this profile or not.
-	TagRule tags.TagRule
+	tagRule tags.TagRule
+
+	// Access only with atomics.
+	// If set to 1, this profile is no longer valid
+	// and you need to load the new one from the cache.
+	closed uint32
 } // }}}
 
 // type cache struct {{{
@@ -209,10 +226,10 @@ type confYAML struct {
 	TagRules tags.ConfTagRules `yaml:"tagrules"`
 
 	// Every interval we run the Poll query
-	PollInterval time.Duration
+	PollInterval time.Duration `yaml:"pollinterval"`
 
 	// Every interval we run the Full query
-	FullInterval time.Duration
+	FullInterval time.Duration `yaml:"fullinterval"`
 } // }}}
 
 // Updated configuration bits

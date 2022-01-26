@@ -7,6 +7,33 @@ import (
 
 var ErrShutdown = errors.New("Shutdown")
 
+// type WeighterProfile interface {{{
+
+type WeighterProfile interface {
+	// Returns 1 random file hash from the profile.
+	//
+	// If you need multiple for a single image it is prefered to use
+	// GetMulti() instead.
+	Get() (uint64, error)
+
+	// Returns the requested number of random file hashes from the profile.
+	//
+	// This is a uint8 specifically because we do not plan on returning too
+	// many at any one time.
+	//
+	// Currently the maximum is 100, about 10x more then what could be
+	// considered normal for a single image.
+	GetMulti(uint8) ([]uint64, error)
+} // }}}
+
+// type Weighter interface {{{
+
+type Weighter interface {
+	// This returned (if exists) a specific Weighter profile that
+	// can be used to ask for one or more files (hashes) that match that profile.
+	GetProfile(string) (WeighterProfile, error)
+} // }}}
+
 // type TagManager interface {{{
 
 // To do any shutdown work a TagManager should be provided a proper context.Context.
