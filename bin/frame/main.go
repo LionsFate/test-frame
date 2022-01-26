@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"frame/cmerge"
+	"frame/idmanager"
 	"frame/imgproc"
 	"frame/tagmanager"
 	"frame/types"
@@ -35,6 +36,11 @@ type confFile struct {
 	// This one is not optional.
 	TagManager string `yaml:"tagmanager"`
 
+	// Maps hashes <-> IDs (uint64).
+	//
+	// This one is not optional.
+	IDManager string `yaml:"idmanager"`
+
 	// Configuration path for ImageProc.
 	//
 	// Optional - If left empty ImageProc will not be loaded.
@@ -62,6 +68,7 @@ type frame struct {
 	cFile   string
 	co      *confFile
 	tm      types.TagManager
+	im      types.IDManager
 	ip      *imgproc.ImageProc
 	cm      *cmerge.CMerge
 	we      types.Weighter
@@ -183,6 +190,19 @@ func main() {
 	if err != nil {
 		f.l.Err(err).Msg("TagManager")
 		f.tm = nil
+		f.close()
+		os.Exit(-1)
+	}
+
+	if f.co.IDManager == "" {
+		f.l.Error().Msg("Missing idmanager configuration")
+		os.Exit(-1)
+	}
+
+	f.im, err = idmanager.New(f.co.IDManager, &f.l, f.ctx)
+	if err != nil {
+		f.l.Err(err).Msg("IDManager")
+		f.im = nil
 		f.close()
 		os.Exit(-1)
 	}

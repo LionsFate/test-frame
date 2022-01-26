@@ -231,19 +231,7 @@ func (wp *wProfile) loadCP() (*cacheProfile, error) {
 
 // func wProfile.Get {{{
 
-func (wp *wProfile) Get() (uint64, error) {
-	cp, err := wp.loadCP()
-	if err != nil {
-		return 0, err
-	}
-
-	ids := wp.we.getRandomProfile(cp, 1)
-	return ids[0], nil
-} // }}}
-
-// func wProfile.GetMulti {{{
-
-func (wp *wProfile) GetMulti(num uint8) ([]uint64, error) {
+func (wp *wProfile) Get(num uint8) ([]uint64, error) {
 	cp, err := wp.loadCP()
 	if err != nil {
 		return nil, err

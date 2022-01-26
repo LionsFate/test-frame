@@ -10,20 +10,14 @@ var ErrShutdown = errors.New("Shutdown")
 // type WeighterProfile interface {{{
 
 type WeighterProfile interface {
-	// Returns 1 random file hash from the profile.
-	//
-	// If you need multiple for a single image it is prefered to use
-	// GetMulti() instead.
-	Get() (uint64, error)
-
-	// Returns the requested number of random file hashes from the profile.
+	// Returns the requested number of random file IDs from the profile.
 	//
 	// This is a uint8 specifically because we do not plan on returning too
 	// many at any one time.
 	//
 	// Currently the maximum is 100, about 10x more then what could be
 	// considered normal for a single image.
-	GetMulti(uint8) ([]uint64, error)
+	Get(uint8) ([]uint64, error)
 } // }}}
 
 // type Weighter interface {{{
@@ -43,6 +37,17 @@ type TagManager interface {
 
 	// Reverse lookup a tag name from its id.
 	Name(uint64) (string, error)
+} // }}}
+
+// type IDManager interface {{{
+
+// Maps between hashes and uint64 (IDs).
+type IDManager interface {
+	// Get an ID for the specified file hash
+	GetID(string) (uint64, error)
+
+	// Gets the hash mapping to the specified ID.
+	GetHash(uint64) (string, error)
 } // }}}
 
 // type Profile struct {{{
