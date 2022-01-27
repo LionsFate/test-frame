@@ -172,8 +172,6 @@ func New(confPath string, tm types.TagManager, l *zerolog.Logger, ctx context.Co
 		return nil, err
 	}
 
-	// XXX BLAH BLAH startup stuff blah blah XXX
-
 	// Start background processing to watch configuration for changes.
 	we.yc.Start()
 
@@ -523,7 +521,6 @@ func (we *Weighter) doPoll() error {
 
 func (we *Weighter) pollQuery(ca *cache) (bool, error) {
 	var id uint64
-	var hash string
 	var enabled, changed bool
 	var tgs tags.Tags
 
@@ -546,8 +543,8 @@ func (we *Weighter) pollQuery(ca *cache) (bool, error) {
 	}
 
 	for pollRows.Next() {
-		// SELECT id, hash, tags, enabled FROM files.merged WHERE updated >= NOW() - interval '5 minutes'
-		if err := pollRows.Scan(&id, &hash, &tgs, &enabled); err != nil {
+		// SELECT hid, tags, enabled FROM files.merged WHERE updated >= NOW() - interval '5 minutes'
+		if err := pollRows.Scan(&id, &tgs, &enabled); err != nil {
 			pollRows.Close()
 			fl.Err(err).Msg("poll-rows-scan")
 			return changed, err
@@ -571,10 +568,9 @@ func (we *Weighter) pollQuery(ca *cache) (bool, error) {
 				continue
 			}
 
-			// First file for this hash, go ahead and create it.
+			// First file for this ID, go ahead and create it.
 			img = &cacheImage{
 				ID:      id,
-				Hash:    hash,
 				Tags:    tgs,
 			}
 
@@ -608,7 +604,6 @@ func (we *Weighter) pollQuery(ca *cache) (bool, error) {
 func (we *Weighter) fullQuery(ca *cache) error {
 	var first bool
 	var id, skipped uint64
-	var hash string
 	var tgs tags.Tags
 
 	fl := we.l.With().Str("func", "fullQuery").Logger()
@@ -640,8 +635,8 @@ func (we *Weighter) fullQuery(ca *cache) error {
 	}
 
 	for fullRows.Next() {
-		// SELECT id, hash, tags FROM files.merged WHERE enabled AND NOT blocked
-		if err := fullRows.Scan(&id, &hash, &tgs); err != nil {
+		// SELECT hid, tags FROM files.merged WHERE enabled AND NOT blocked
+		if err := fullRows.Scan(&id, &tgs); err != nil {
 			fullRows.Close()
 			fl.Err(err).Msg("full-rows-scan")
 			return err
@@ -663,7 +658,6 @@ func (we *Weighter) fullQuery(ca *cache) error {
 			// Nope, first one - Go ahead and create it.
 			img = &cacheImage{
 				ID:   id,
-				Hash: hash,
 				Tags: tgs,
 				seen: ca.seen,
 			}
@@ -713,6 +707,16 @@ func (we *Weighter) loadConf() error {
 
 	fl := we.l.With().Str("func", "loadConf").Logger()
 
+	// Avoid us running twice (should not be possible), but more importantly, this will
+	// called notifyConf() before we are ready, so this lets them know to just return.
+	if !atomic.CompareAndSwapUint32(&we.start, 0, 1) {
+		err := errors.New("loadConf already running")
+		fl.Err(err).Send()
+		return err
+	}
+
+	defer atomic.StoreUint32(&we.start, 0)
+
 	// Copy the default ycCallers, we need to copy this so we can add our own notifications.
 	ycc := ycCallers
 
@@ -757,11 +761,11 @@ func (we *Weighter) loadConf() error {
 		return err
 	}
 
-	// Create the new Whitelist of tags.
-	we.makeWhitelist()
-
 	// Looks good, go ahead and store it.
 	we.co.Store(co)
+
+	// Create the new Whitelist of tags.
+	we.makeWhitelist()
 
 	return nil
 } // }}}
@@ -770,6 +774,11 @@ func (we *Weighter) loadConf() error {
 
 func (we *Weighter) notifyConf() {
 	fl := we.l.With().Str("func", "notifyConf").Logger()
+
+	// If loadConf() is running then we just return right away.
+	if atomic.LoadUint32(&we.start) == 1 {
+		return
+	}
 
 	// Update our configuration.
 	co, ok := we.yc.Get().(*conf)
@@ -955,6 +964,12 @@ func (we *Weighter) checkConf(co *conf, reload bool) (bool, uint64) {
 	// If this isn't a reload, then nothing further to do.
 	if !reload {
 		return true, 0
+	}
+
+	// Is this our first load?
+	if atomic.LoadUint32(&we.start) == 1 {
+		// Yep, so everything basically changed.
+		return true, ucDBConn|ucDBQuery|ucTagRules|ucProfiles|ucPollInt|ucFullInt
 	}
 
 	// Get the old configuration to compare against and figure out what changed.
