@@ -5,10 +5,11 @@ import (
 	"frame/tags"
 	"frame/types"
 	"frame/yconf"
-	"github.com/rs/zerolog"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 type confQueries struct {
@@ -74,10 +75,8 @@ type fileCache struct {
 // type hashCache struct {{{
 
 type hashCache struct {
-	// The database ID.
+	// The database Hash ID.
 	ID uint64
-
-	Hash string
 
 	// Our combined tags from all the files with the same hash, as well as our tag rules.
 	Tags tags.Tags
@@ -93,6 +92,9 @@ type hashCache struct {
 	Disabled bool
 
 	Changed bool
+
+	// If this hash is already in the merged table (basically do we UPDATE or INSERT).
+	merged bool
 } // }}}
 
 // type cache struct {{{
@@ -100,14 +102,14 @@ type hashCache struct {
 type cache struct {
 	// As we don't have any reads without writes, this is a Mutex and not a RWMutex.
 	cMut   sync.Mutex
-	hashes map[string]*hashCache
+	hashes map[uint64]*hashCache
 
 	// When doing a poll, this is a list of just those hashes that changed from pollQuery(), so
 	// we don't have to loop through hashes checking for changes.
 	//
 	// This also requires having a lock on cMut to access, as these point to the same values
 	// in the hashes map above.
-	pollChanged map[string]*hashCache
+	pollChanged map[uint64]*hashCache
 } // }}}
 
 // type CMerge struct {{{

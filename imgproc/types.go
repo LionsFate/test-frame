@@ -117,6 +117,8 @@ type ImageProc struct {
 
 	tm types.TagManager
 
+	im types.IDManager
+
 	// The last configuration reload, the bits that changed.
 	//
 	// Use atomic functions to access and change this value as they are used in multiple locations.
@@ -196,8 +198,8 @@ type fileCache struct {
 	// These are the calculated tags - They combine the path tags, and the above file and sidecar tags.
 	CTags tags.Tags
 
-	// The files calculated hash
-	Hash string
+	// The files calculated hash ID
+	ID uint64
 
 	// If this is set, then the file has some type of error and no further attempt to open it should be attempted.
 	//

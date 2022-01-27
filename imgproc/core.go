@@ -108,10 +108,11 @@ func nextLoop(old uint32) uint32 {
 // Creates a new ImageProc.
 //
 // Checks the configuration, database and loads the cache but does not do any actual processing until Start() is called.
-func New(confPath string, tm types.TagManager, l *zerolog.Logger, ctx context.Context) (*ImageProc, error) {
+func New(confPath string, tm types.TagManager, im types.IDManager, l *zerolog.Logger, ctx context.Context) (*ImageProc, error) {
 	ip := &ImageProc{
 		l:     l.With().Str("mod", "imgproc").Logger(),
 		tm:    tm,
+		im:    im,
 		ctx:   ctx,
 		cPath: confPath,
 	}
@@ -309,7 +310,7 @@ func (ip *ImageProc) getFileCache(cr *checkRun, pc *pathCache, file string, modT
 func (ip *ImageProc) getPathCache(cr *checkRun, path string, inheritTags tags.Tags) (*pathCache, error) {
 	fl := ip.l.With().Str("func", "getPathCache").Int("base", cr.bc.Base).Str("path", path).Logger()
 
-	var inherit = false
+	var inherit = true
 	var pathTF string
 
 	// Get the path cache.
@@ -645,7 +646,7 @@ func (ip *ImageProc) checkHashTagsDB(cr *checkRun) error {
 
 			// Did the file timestamp change?
 			// Or, is there no hash already?
-			if fc.updated&upFileTS != 0 || fc.Hash == "" {
+			if fc.updated&upFileTS != 0 || fc.ID == 0 {
 				if err := ip.setFileHash(cr, pc, fc); err != nil {
 
 					// We want to ensure one bad file can't crash the entire application, so we log the error here but otherwise we continue.
@@ -654,6 +655,11 @@ func (ip *ImageProc) checkHashTagsDB(cr *checkRun) error {
 					// Should the timestamp on the file change the error state will be cleared.
 					fc.fileError = true
 					fl.Err(err).Msg("getFileHash")
+
+					// If in shutdown we need to return.
+					if err == types.ErrShutdown {
+						return err
+					}
 				}
 			}
 		}
@@ -695,16 +701,6 @@ func (ip *ImageProc) setFileHash(cr *checkRun, pc *pathCache, fc *fileCache) err
 
 	// Get the hash
 	tHash := hex.EncodeToString(hash.Sum(nil))
-	if tHash == fc.Hash {
-		f.Close()
-		// As the hash has not changed, there is no need to create a new image cache.
-		return nil
-	}
-
-	// Update the file hash and set the bit so the database is properly changed.
-	fc.Hash = tHash
-	fc.updated |= upFileHS
-	pc.updated |= upPathFI
 
 	// Hash should never be this small, but we like sanity.
 	if len(tHash) < 3 {
@@ -713,7 +709,27 @@ func (ip *ImageProc) setFileHash(cr *checkRun, pc *pathCache, fc *fileCache) err
 		return errors.New("Bad hash??")
 	}
 
-	//fl.Info().Str("hash", tHash).Send()
+	// Convert the hash here to an ID for us.
+	tHID, err := ip.im.GetID(tHash)
+	if err != nil {
+		f.Close()
+		fl.Err(err).Msg("GetID")
+		return err
+	}
+
+	// Did the hash actually change?
+	if tHID == fc.ID {
+		f.Close()
+		// Hash has not changed - no need to create a new image cache.
+		return nil
+	}
+
+	// Update to the new ID
+	fc.ID = tHID
+
+	// Set the bit so the database is properly changed.
+	fc.updated |= upFileHS
+	pc.updated |= upPathFI
 
 	// Now, does the cache file already exist?
 	//
@@ -1103,7 +1119,7 @@ func (ip *ImageProc) updateDBFile(tx pgx.Tx, cr *checkRun, pid uint64, fc *fileC
 
 	// Is this a new file?
 	if fc.id == 0 {
-		if err := tx.QueryRow(ip.ctx, "files-insert", pid, fc.Name, fc.FileTS, fc.Hash, fc.SideTS, fc.SideTG, fc.CTags).Scan(&fc.id); err != nil {
+		if err := tx.QueryRow(ip.ctx, "files-insert", pid, fc.Name, fc.FileTS, fc.ID, fc.SideTS, fc.SideTG, fc.CTags).Scan(&fc.id); err != nil {
 			fl.Err(err).Str("file", fc.Name).Msg("insert file")
 			return err
 		}
@@ -1113,7 +1129,7 @@ func (ip *ImageProc) updateDBFile(tx pgx.Tx, cr *checkRun, pid uint64, fc *fileC
 		// Existing path - So anything to update?
 		if fc.updated&(upFileTS|upFileCT|upFileHS|upSideTS|upSideTG) != 0 {
 			// Update the row
-			if _, err := tx.Exec(ip.ctx, "files-update", fc.id, fc.FileTS, fc.Hash, fc.SideTS, fc.SideTG, fc.CTags); err != nil {
+			if _, err := tx.Exec(ip.ctx, "files-update", fc.id, fc.FileTS, fc.ID, fc.SideTS, fc.SideTG, fc.CTags); err != nil {
 				fl.Err(err).Uint64("fid", fc.id).Msg("update file")
 				return err
 			}
@@ -1360,8 +1376,8 @@ func (ip *ImageProc) checkAll() {
 //
 // This assumes you already have a lock on the cache passed in.
 func (ip *ImageProc) addBaseCache(cb *confBase, ca *cache, db *pgxpool.Pool) error {
-	var inID uint64
-	var name, hash string
+	var inID, hID uint64
+	var name string
 	var changed, sidets time.Time
 	var tgs, sideTags tags.Tags
 
@@ -1447,8 +1463,8 @@ func (ip *ImageProc) addBaseCache(cb *confBase, ca *cache, db *pgxpool.Pool) err
 			//
 			// Default query I used for development -
 			//
-			//   SELECT fid, name, filets, hash, sidets, sidetags, tags FROM files.files WHERE pid = $1 AND enabled
-			if err := fileRows.Scan(&inID, &name, &changed, &hash, &sidets, &sideTags, &tgs); err != nil {
+			//   SELECT fid, name, filets, hid, sidets, sidetags, tags FROM files.files WHERE pid = $1 AND enabled
+			if err := fileRows.Scan(&inID, &name, &changed, &hID, &sidets, &sideTags, &tgs); err != nil {
 				fileRows.Close()
 				fl.Err(err).Msg("files-select-rows-scan")
 				return err
@@ -1462,7 +1478,7 @@ func (ip *ImageProc) addBaseCache(cb *confBase, ca *cache, db *pgxpool.Pool) err
 			fc := &fileCache{
 				id:     inID,
 				Name:   name,
-				Hash:   hash,
+				ID:     hID,
 				FileTS: changed,
 				SideTS: sidets,
 				SideTG: sideTags.Copy(),

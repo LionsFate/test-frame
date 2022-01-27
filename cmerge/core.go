@@ -7,12 +7,13 @@ import (
 	"frame/tags"
 	"frame/types"
 	"frame/yconf"
+	"sync/atomic"
+	"time"
+
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/log/zerologadapter"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/rs/zerolog"
-	"sync/atomic"
-	"time"
 )
 
 // func yconfMerge {{{
@@ -242,7 +243,7 @@ func (cm *CMerge) doFull() error {
 		fl.Info().Msg("clearning cache for full")
 	}
 
-	ca.hashes = make(map[string]*hashCache, 1)
+	ca.hashes = make(map[uint64]*hashCache, 1)
 
 	// Get the existing merged table (if any) before anything else.
 	if err := cm.selectMerged(); err != nil {
@@ -286,12 +287,11 @@ func (cm *CMerge) doFull() error {
 
 // This gets all the existing rows from the merged table, generally only called at startup.
 func (cm *CMerge) selectMerged() error {
-	var fid uint64
-	var hash string
+	var hid uint64
 	var tgs tags.Tags
 	var blocked bool
 
-	fl := cm.l.With().Str("func", "pullMerged").Logger()
+	fl := cm.l.With().Str("func", "selectMerged").Logger()
 
 	db, err := cm.getDB()
 	if err != nil {
@@ -310,8 +310,8 @@ func (cm *CMerge) selectMerged() error {
 	ca := cm.ca
 
 	for fullRows.Next() {
-		// SELECT mid, hash, tags, blocked, enabled FROM files.merged
-		if err := fullRows.Scan(&fid, &hash, &tgs, &blocked); err != nil {
+		// SELECT hid, tags, blocked FROM files.merged WHERE enabled
+		if err := fullRows.Scan(&hid, &tgs, &blocked); err != nil {
 			fullRows.Close()
 			fl.Err(err).Msg("select-rows-scan")
 			return err
@@ -326,11 +326,11 @@ func (cm *CMerge) selectMerged() error {
 		// emptied before calling this function.
 		//
 		// As the hash is unique we also don't need to care about merging here.
-		ca.hashes[hash] = &hashCache{
-			ID:      fid,
-			Hash:    hash,
+		ca.hashes[hid] = &hashCache{
+			ID:      hid,
 			Tags:    tgs,
 			Blocked: blocked,
+			merged:  true,
 
 			// Create the empty Files hash, as we expect something to be adde when we do the full.
 			Files: make(map[uint64]*fileCache, 1),
@@ -345,8 +345,7 @@ func (cm *CMerge) selectMerged() error {
 // func CMerge.pollQuery {{{
 
 func (cm *CMerge) pollQuery() error {
-	var fid uint64
-	var hash string
+	var fid, hid uint64
 	var changed, enabled bool
 	var tgs tags.Tags
 
@@ -374,11 +373,11 @@ func (cm *CMerge) pollQuery() error {
 	//
 	// Technically this should already be empty, but we like sanity.
 	if ca.pollChanged == nil {
-		ca.pollChanged = make(map[string]*hashCache, 1)
+		ca.pollChanged = make(map[uint64]*hashCache, 1)
 	}
 
 	for pollRows.Next() {
-		// SELECT fid, hash, tags, enabled FROM files.files WHERE updated >= NOW() - interval '5 minutes'
+		// SELECT fid, hid, tags, enabled FROM files.files WHERE updated >= NOW() - interval '5 minutes'
 		//
 		// I took some time to think about how I wanted to do this query.
 		// Initially I wanted to pass in the most recent updated timestamp from the full query, and just get the changes since then.
@@ -392,7 +391,7 @@ func (cm *CMerge) pollQuery() error {
 		//
 		// So I opted to move the update tracking to the query itself, and only get recently changed rows based off
 		// the current time.
-		if err := pollRows.Scan(&fid, &hash, &tgs, &enabled); err != nil {
+		if err := pollRows.Scan(&fid, &hid, &tgs, &enabled); err != nil {
 			pollRows.Close()
 			fl.Err(err).Msg("poll-rows-scan")
 			return err
@@ -402,7 +401,7 @@ func (cm *CMerge) pollQuery() error {
 		tgs = tgs.Fix()
 
 		// Does this hash already exist?
-		hc, ok := ca.hashes[hash]
+		hc, ok := ca.hashes[hid]
 		if !ok {
 			// Nope - Is it enabled?
 			//
@@ -413,13 +412,13 @@ func (cm *CMerge) pollQuery() error {
 
 			// Nope, first one - Go ahead and create it.
 			hc = &hashCache{
-				Hash:    hash,
+				ID:      hid,
 				Blocked: false,
 				Files:   make(map[uint64]*fileCache, 1),
 			}
 
 			changed = true
-			ca.hashes[hash] = hc
+			ca.hashes[hid] = hc
 		}
 
 		// Is this file new?
@@ -461,7 +460,7 @@ func (cm *CMerge) pollQuery() error {
 		// It adds a little more work but not a whole lot.
 		if changed {
 			changed = false
-			ca.pollChanged[hash] = hc
+			ca.pollChanged[hid] = hc
 		}
 	}
 
@@ -473,8 +472,7 @@ func (cm *CMerge) pollQuery() error {
 // func CMerge.fullQuery {{{
 
 func (cm *CMerge) fullQuery() error {
-	var fid uint64
-	var hash string
+	var fid, hid uint64
 	var tgs tags.Tags
 
 	fl := cm.l.With().Str("func", "fullQuery").Logger()
@@ -496,24 +494,24 @@ func (cm *CMerge) fullQuery() error {
 	ca := cm.ca
 
 	for fullRows.Next() {
-		// SELECT fid, hash, tags FROM files.files WHERE enabled
-		if err := fullRows.Scan(&fid, &hash, &tgs); err != nil {
+		// SELECT fid, hid, tags FROM files.files WHERE enabled
+		if err := fullRows.Scan(&fid, &hid, &tgs); err != nil {
 			fullRows.Close()
 			fl.Err(err).Msg("full-rows-scan")
 			return err
 		}
 
 		// Does this hash already exist?
-		hc, ok := ca.hashes[hash]
+		hc, ok := ca.hashes[hid]
 		if !ok {
 			// Nope, first one - Go ahead and create it.
 			hc = &hashCache{
-				Hash:    hash,
+				ID:      hid,
 				Blocked: false,
 				Files:   make(map[uint64]*fileCache, 1),
 			}
 
-			ca.hashes[hash] = hc
+			ca.hashes[hid] = hc
 		}
 
 		// Is this file new?
@@ -546,7 +544,7 @@ func (cm *CMerge) hashCheck(hc *hashCache, co *conf) error {
 	var tgs tags.Tags
 	var block bool
 
-	fl := cm.l.With().Str("func", "hashCheck").Str("hash", hc.Hash).Logger()
+	fl := cm.l.With().Str("func", "hashCheck").Uint64("hid", hc.ID).Logger()
 
 	// Ensure we have at least one file for this hash.
 	if len(hc.Files) < 1 {
@@ -592,9 +590,9 @@ func (cm *CMerge) hashCheck(hc *hashCache, co *conf) error {
 			if fl.GetLevel() <= zerolog.DebugLevel {
 				name, err := cm.tm.Name(tr.Tag)
 				if err != nil {
-					fl.Debug().Str("hash", hc.Hash).Uint64("tagruleid", tr.Tag).Send()
+					fl.Debug().Uint64("tagruleid", tr.Tag).Send()
 				} else {
-					fl.Debug().Str("hash", hc.Hash).Str("tagrule", name).Send()
+					fl.Debug().Str("tagrule", name).Send()
 				}
 			}
 
@@ -604,7 +602,7 @@ func (cm *CMerge) hashCheck(hc *hashCache, co *conf) error {
 
 	// Did the tags change?
 	if !hc.Tags.Equal(tgs) {
-		fl.Debug().Str("hash", hc.Hash).Msg("tags")
+		fl.Debug().Msg("tags")
 		hc.Changed = true
 		hc.Tags = tgs
 	}
@@ -612,7 +610,7 @@ func (cm *CMerge) hashCheck(hc *hashCache, co *conf) error {
 	// Is this file blocked?
 	block = hc.Tags.Contains(co.BlockTags)
 	if block != hc.Blocked {
-		fl.Debug().Str("hash", hc.Hash).Bool("block", block).Send()
+		fl.Debug().Bool("block", block).Send()
 		hc.Changed = true
 		hc.Blocked = block
 	}
@@ -628,7 +626,7 @@ func (cm *CMerge) pushHash(hc *hashCache, tx pgx.Tx) error {
 		return nil
 	}
 
-	fl := cm.l.With().Str("func", "pushHash").Str("hash", hc.Hash).Logger()
+	fl := cm.l.With().Str("func", "pushHash").Uint64("hid", hc.ID).Logger()
 
 	// Disabled?
 	if hc.Disabled {
@@ -640,21 +638,21 @@ func (cm *CMerge) pushHash(hc *hashCache, tx pgx.Tx) error {
 		}
 
 		if _, err := tx.Exec(cm.ctx, "disable", hc.ID); err != nil {
-			fl.Err(err).Uint64("id", hc.ID).Msg("disable")
+			fl.Err(err).Msg("disable")
 			return err
 		}
 
 		// Now remove the hash from our cache.
-		delete(cm.ca.hashes, hc.Hash)
+		delete(cm.ca.hashes, hc.ID)
 		return nil
 	}
 
 	// Updating an existing row?
-	if hc.ID != 0 {
+	if hc.merged {
 		// Yep, just apply the changes to the id.
-		// UPDATE files.merged SET tags = $1, blocked = $2 WHERE mid = $3
+		// UPDATE files.merged SET tags = $1, blocked = $2 WHERE hid = $3
 		if _, err := tx.Exec(cm.ctx, "update", hc.Tags, hc.Blocked, hc.ID); err != nil {
-			fl.Err(err).Uint64("id", hc.ID).Msg("update")
+			fl.Err(err).Msg("update")
 			return err
 		}
 
@@ -664,14 +662,20 @@ func (cm *CMerge) pushHash(hc *hashCache, tx pgx.Tx) error {
 	}
 
 	// New row, so insert it.
-	// INSERT INTO files.mergeed ( hash, tags, blocked ) VALUES ( $1, $2, $3 ) ON CONFLICT ON CONSTRAINT "merged_hash_key" DO UPDATE SET tags = EXCLUDED.tags, blocked = EXCLUDED.blocked, enabled = true RETURNING mid
-	if err := tx.QueryRow(cm.ctx, "insert", hc.Hash, hc.Tags, hc.Blocked).Scan(&hc.ID); err != nil {
-		fl.Err(err).Uint64("id", hc.ID).Msg("insert")
+	// INSERT INTO files.mergeed ( hid, tags, blocked ) VALUES ( $1, $2, $3 ) ON CONFLICT ON CONSTRAINT "merged_hid_key" DO UPDATE SET tags = EXCLUDED.tags, blocked = EXCLUDED.blocked, enabled = true
+	if _, err := tx.Exec(cm.ctx, "insert", hc.ID, hc.Tags, hc.Blocked); err != nil {
+		fl.Err(err).Msg("insert")
 		return err
 	}
 
 	// Changes written, so clear Changed.
 	hc.Changed = false
+
+	// We now know its in the merged table already, so next time UPDATE rather then INSERT.
+	if !hc.merged {
+		hc.merged = true
+	}
+
 	return nil
 } // }}}
 

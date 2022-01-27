@@ -179,7 +179,7 @@ func (im *IDManager) GetHash(in uint64) (string, error) {
 		return "", err
 	}
 
-	if err := db.QueryRow(im.ctx, "GetHash", in).Scan(&hash); err != nil {
+	if err := db.QueryRow(im.ctx, "get-hash", in).Scan(&hash); err != nil {
 		fl.Err(err).Msg("db-GetHash")
 		return "", err
 	}
@@ -225,7 +225,7 @@ func (im *IDManager) GetID(in string) (uint64, error) {
 		return 0, err
 	}
 
-	if err := db.QueryRow(im.ctx, "GetID", in).Scan(&id); err != nil {
+	if err := db.QueryRow(im.ctx, "get-id", in).Scan(&id); err != nil {
 		fl.Err(err).Msg("db-GetID")
 		return 0, err
 	}

@@ -107,6 +107,62 @@ CREATE SCHEMA IF NOT EXISTS files AUTHORIZATION frame;
 -- Ensure everything we do is within the new tags schema.
 SET SCHEMA 'files';
 
+CREATE TABLE IF NOT EXISTS hashes (
+	hid bigserial PRIMARY KEY,
+	hash varchar(128) NOT NULL,
+
+	UNIQUE(  hash )
+);
+
+ALTER TABLE IF EXISTS hashes OWNER TO frame;
+
+-- This is set to DEFINER specifically so that you can just give permission to this function without needing to
+-- give permission to the table itself.
+CREATE OR REPLACE FUNCTION get_hashid(wanted varchar(128)) RETURNS bigint
+	LANGUAGE plpgsql SECURITY DEFINER
+	AS $$
+		DECLARE
+			loops integer = 0;
+			vhid bigint;
+			vparent bigint;
+		BEGIN
+			-- We always want the tags to be in lower case, makes things a lot easier.
+			wanted = lower(wanted);
+
+			-- We loop here because its very possible for us to be called twice at the same time.
+			-- So we loop in case someone else inserts the same tag we are trying to at the same time as us.
+			LOOP
+				-- First, does this tag already exist?
+				SELECT hid INTO vhid FROM files.hashes WHERE hash = wanted;
+				IF FOUND THEN
+					RETURN vhid;
+				END IF;
+
+				-- Ok, it doesn't already exist, so go ahead and add it to the tags table.
+				-- Ensure we are in another BEGIN .. END so this failure doesn't cause the function itself to fail.
+				BEGIN
+					-- Two things we account for here. The insert works, in which case the next loop finds it.
+					-- Or the insert fails because it was inserted after our SELECT above (unique_violation), in
+					-- which case the next loop also catches the new tid.
+					INSERT INTO files.hashes ( hash ) VALUES ( wanted );
+					EXCEPTION WHEN unique_violation THEN
+						-- It was inserted already, so we ignore this and loop.
+						NULL;
+				END;
+
+				-- We loop too many times already?
+				IF loops > 2 THEN
+					RAISE EXCEPTION 'Unable to get a hid %', wanted ;
+				END IF;
+
+				-- Increase our loop count.
+				loops := loops + 1;
+			END LOOP;
+		END
+	$$;
+
+ALTER FUNCTION get_hashid(wanted varchar(128)) OWNER TO frame;
+
 -- A "base" path is a path that one expects to change between servers.
 --
 -- For example on serveer A you might have "/mnt/external_path", and on server B is might be "/usr/mnt/that_server", yet server C it could be "H:\"
@@ -193,7 +249,7 @@ CREATE TABLE IF NOT EXISTS files (
 	-- Can be empty so long as either the file or the path has at least 1 tag.
 	sidetags bigint[],
 
-	-- The hashed name of the file, hashed using SHA-512.
+	-- The hashed ID of the file, hashed using SHA-512 (default).
 	--
 	-- This is how the file itself is looked up once processed.
 	--
@@ -207,7 +263,7 @@ CREATE TABLE IF NOT EXISTS files (
 	-- They are going to post the same photos on both.
 	--
 	-- To account for this the final "merge" table merges handles this, and merges the tags of those files with the same hashes.
-	hash varchar(128) NOT NULL,
+	hid bigint NOT NULL,
 
 	-- The calculated tags for the file.
 	-- This is the combined path, file and sidecar tags into 1 column.
@@ -219,6 +275,8 @@ CREATE TABLE IF NOT EXISTS files (
 
 	UNIQUE( pid, name ),
 
+	FOREIGN KEY ( hid ) REFERENCES hashes,
+
 	FOREIGN KEY ( pid ) REFERENCES paths
 );
 
@@ -228,7 +286,7 @@ CREATE OR REPLACE FUNCTION files_upd() RETURNS trigger
 	LANGUAGE plpgsql SECURITY DEFINER
 	AS $$
 		BEGIN
-			IF NEW.filets != OLD.filets OR NEW.sidets != OLD.sidets OR NEW.sidetags != OLD.sidetags OR NEW.tags != OLD.tags THEN
+			IF NEW.filets != OLD.filets OR NEW.sidets != OLD.sidets OR NEW.sidetags != OLD.sidetags OR NEW.tags != OLD.tags OR NEW.hid != OLD.hid THEN
 				NEW.updated = NOW();
 			END IF;
 			RETURN NEW;
@@ -240,8 +298,7 @@ ALTER FUNCTION files_upd() OWNER TO frame ;
 CREATE TRIGGER files_upd BEFORE INSERT OR UPDATE ON files.files FOR EACH ROW EXECUTE FUNCTION files_upd();
 
 CREATE TABLE IF NOT EXISTS merged (
-	mid bigserial PRIMARY KEY,
-	hash varchar(128) NOT NULL,
+	hid bigint NOT NULL,
 
 	-- These are the combined tags of any files with the same hash *as well as* the tags assigned to the directories (if any)
 	-- those files are from.
@@ -252,7 +309,8 @@ CREATE TABLE IF NOT EXISTS merged (
 	blocked bool NOT NULL DEFAULT false,
 	enabled bool NOT NULL DEFAULT true,
 
-	UNIQUE(  hash )
+	FOREIGN KEY ( hid ) REFERENCES hashes,
+	UNIQUE(  hid )
 );
 
 ALTER TABLE IF EXISTS merged OWNER TO frame;
@@ -272,7 +330,7 @@ ALTER FUNCTION merged_upd() OWNER TO frame ;
 
 CREATE TRIGGER merged_upd BEFORE INSERT OR UPDATE ON files.merged FOR EACH ROW EXECUTE FUNCTION merged_upd();
 
-CREATE OR REPLACE VIEW files.merged_names AS SELECT mid, hash, get_tagnames(tags) AS tags, updated, blocked, enabled FROM files.merged ;
+CREATE OR REPLACE VIEW files.merged_names AS SELECT hid, get_tagnames(tags) AS tags, updated, blocked, enabled FROM files.merged ;
 
 ALTER VIEW IF EXISTS merged_names OWNER TO frame;
 

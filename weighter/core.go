@@ -58,8 +58,12 @@ func yconfMerge(inAInt, inBInt interface{}) (interface{}, error) {
 		inA.FullInterval = inB.FullInterval
 	}
 
-	// Copy the profiles, this one is a little more complex.
-	if len(inB.Profiles) > 0 {
+	// If A has no profiles but B does?
+	// Just copy them over as-is, easy enough.
+	if inA.Profiles == nil && inB.Profiles != nil {
+		inA.Profiles = inB.Profiles
+	} else if inA.Profiles != nil && inB.Profiles != nil {
+		// Copy the profiles, this one is a little more complex.
 		for kb, vb := range inB.Profiles {
 			va, ok := inA.Profiles[kb]
 			if !ok {
