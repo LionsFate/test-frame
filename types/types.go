@@ -3,6 +3,7 @@ package types
 import (
 	"errors"
 	"frame/tags"
+	"image"
 )
 
 var ErrShutdown = errors.New("Shutdown")
@@ -48,6 +49,24 @@ type IDManager interface {
 
 	// Gets the hash mapping to the specified ID.
 	GetHash(uint64) (string, error)
+} // }}}
+
+// type CacheManager interface {{{
+
+// Used to handle all our image caching needs.
+type CacheManager interface {
+	// Given an open image it will hash the cache using whatever hash method its configured for,
+	// cache it and then return the ID provided by IDManager.
+	//
+	// The hash is created by passing the image to png.Encode()
+	// and passing that to hash.Hash.Write().
+	//
+	// This happens *after* the image has been resized for the cache.
+	CacheImage(image.Image) (uint64, error)
+
+	// Given a hash ID originally provided by IDManager this will return an image.Image from the file
+	// opened in the cache.
+	LoadImage(uint64) (image.Image, error)
 } // }}}
 
 // type Profile struct {{{

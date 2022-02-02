@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"frame/cmanager"
 	"frame/cmerge"
 	"frame/idmanager"
 	"frame/imgproc"
@@ -26,6 +28,8 @@ func usage() {
 	flag.PrintDefaults()
 	os.Exit(-1)
 } // }}}
+
+// type confFile struct {{{
 
 // Note that at least one of the optional services must be enabled.
 //
@@ -51,6 +55,11 @@ type confFile struct {
 	// Optional - If left empty CMerge will not be loaded.
 	CacheMerge string `yaml:"cachemerge"`
 
+	// Configure the CacheManager.
+	//
+	// Required if either ImageProc or Renderer is configured.
+	CacheManager string `yaml:"cachemanager"`
+
 	// Configure path for Weighter
 	//
 	// Optional - If left empty Weighter will not be loaded.
@@ -61,7 +70,9 @@ type confFile struct {
 	//
 	// Optional - If left empty then STDOUT and STDERR will get all output.
 	LogPath string `yaml:"logpath"`
-}
+} // }}}
+
+// type frame struct {{{
 
 type frame struct {
 	l       zerolog.Logger
@@ -71,21 +82,16 @@ type frame struct {
 	im      types.IDManager
 	ip      *imgproc.ImageProc
 	cm      *cmerge.CMerge
+	cma     *cmanager.CManager
 	we      types.Weighter
 	curHour int32
 	yc      *yconf.YConf
 	ctx     context.Context
 	can     context.CancelFunc
-}
-
-// func emptyConf {{{
-
-func emptyConf() interface{} {
-	return &confFile{}
 } // }}}
 
 var pathsConf = yconf.Callers{
-	Empty: emptyConf,
+	Empty: func() interface{} { return &confFile{} },
 }
 
 // func frame.Wait {{{
@@ -207,8 +213,24 @@ func main() {
 		os.Exit(-1)
 	}
 
+	if f.co.CacheManager != "" {
+		f.cma, err = cmanager.New(f.co.CacheManager, f.im, &f.l, f.ctx)
+		if err != nil {
+			f.cma = nil
+			f.l.Err(err).Msg("CacheManager")
+			f.close()
+			os.Exit(-1)
+		}
+	}
+
 	// Do we load the ImageProc?
 	if f.co.ImageProc != "" {
+		if f.cma == nil {
+			f.l.Err(errors.New("imageproc requires cachemanager")).Send()
+			f.close()
+			os.Exit(-1)
+		}
+
 		// And next is our real core, the one doing all the real work here, ImageProc.
 		f.ip, err = imgproc.New(f.co.ImageProc, f.tm, f.im, &f.l, f.ctx)
 		if err != nil {
