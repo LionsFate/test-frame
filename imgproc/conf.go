@@ -2,7 +2,6 @@ package imgproc
 
 import (
 	"errors"
-	"fmt"
 	"frame/yconf"
 	"os"
 	"sync/atomic"
@@ -35,21 +34,6 @@ func (ip *ImageProc) yconfConvert(inInt interface{}) (interface{}, error) {
 	if in.Queries != nil {
 		// We use the same structure between both, so just copy.
 		out.Queries = in.Queries
-	}
-
-	// Convert MaxResolution, if set.
-	if in.MaxResolution != "" {
-		num, err := fmt.Sscanf(in.MaxResolution, "%dx%d", &out.MaxResolution.X, &out.MaxResolution.Y)
-		if err != nil || num != 2 {
-			err = errors.New("invalid MaxResolution")
-			fl.Err(err).Str("maxresolution", in.MaxResolution).Send()
-			return nil, err
-		}
-	}
-
-	// Copy over the ImageCache path if its set.
-	if in.ImageCache != "" {
-		out.ImageCache = in.ImageCache
 	}
 
 	// Any file system base paths defined?
@@ -148,26 +132,10 @@ func yconfMerge(inAInt, inBInt interface{}) (interface{}, error) {
 		}
 	}
 
-	// Replace the ImageCache
-	if inA.ImageCache != inB.ImageCache && inB.ImageCache != "" {
-		inA.ImageCache = inB.ImageCache
-	}
-
 	// First ensure A has the database if not empty.
 	if inA.Database != inB.Database && inB.Database != "" {
 		// Since inB is always the latest file opened, overwrite whatever is in inA.
 		inA.Database = inB.Database
-	}
-
-	// Copy MaxResolution if needed.
-	if inA.MaxResolution != inB.MaxResolution {
-		if inB.MaxResolution.X > 0 {
-			inA.MaxResolution.X = inB.MaxResolution.X
-		}
-
-		if inB.MaxResolution.Y > 0 {
-			inA.MaxResolution.Y = inB.MaxResolution.Y
-		}
 	}
 
 	// If inA has no Bases, but inB does - Just copy the map directly.
@@ -235,10 +203,6 @@ func yconfChanged(origConfInt, newConfInt interface{}) bool {
 		return true
 	}
 
-	if origConf.MaxResolution != newConf.MaxResolution {
-		return true
-	}
-
 	// Queries change?
 	if origConf.Queries.FilesSelect != newConf.Queries.FilesSelect {
 		return true
@@ -269,10 +233,6 @@ func yconfChanged(origConfInt, newConfInt interface{}) bool {
 	}
 
 	if origConf.Queries.PathsDisable != newConf.Queries.PathsDisable {
-		return true
-	}
-
-	if origConf.ImageCache != newConf.ImageCache {
 		return true
 	}
 
@@ -400,16 +360,6 @@ func (ip *ImageProc) checkConf(co *conf, reload bool) (bool, uint64) {
 		return false, ucBits
 	}
 
-	// Sane MaxResolution, no smaller then 720p, there is no upper bound.
-	// If its lower then 720, then we default it to 4k.
-	if co.MaxResolution.X < 720 {
-		co.MaxResolution.X = 3840
-	}
-
-	if co.MaxResolution.Y < 720 {
-		co.MaxResolution.Y = 3840
-	}
-
 	// Everything below here checks for changes between existing and new configuration.
 	//
 	// If there is no existing then we have nothing to compare against, so work is done.
@@ -420,10 +370,6 @@ func (ip *ImageProc) checkConf(co *conf, reload bool) (bool, uint64) {
 	}
 
 	// Now we check to see what parts of the configuration changed.
-
-	if oldco.MaxResolution != co.MaxResolution {
-		ucBits |= ucMaxRes
-	}
 
 	if oldco.Database != co.Database {
 		ucBits |= ucDBConn

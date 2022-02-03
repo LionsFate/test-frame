@@ -5,6 +5,7 @@ import (
 	"frame/types"
 	"frame/yconf"
 	"image"
+	"sync"
 	"sync/atomic"
 
 	"github.com/rs/zerolog"
@@ -19,7 +20,6 @@ type conf struct {
 	MaxResolution image.Point
 	ImageCache string
 }
-
 
 // type CManager struct {{{
 
@@ -39,6 +39,10 @@ type CManager struct {
 	co atomic.Value
 
 	im types.IDManager
+
+	// A pool for our bytes.Buffer
+	// used for hashing and encoding images.
+	bp sync.Pool
 
 	// Used to control shutting down background goroutines.
 	ctx context.Context

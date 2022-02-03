@@ -5,7 +5,6 @@ import (
 	"frame/tags"
 	"frame/types"
 	"frame/yconf"
-	"image"
 	"io/fs"
 	"sync"
 	"sync/atomic"
@@ -52,10 +51,7 @@ type confQueries struct {
 
 // Pre-converted YAML-friendly configuration.
 type confYAML struct {
-	MaxResolution string                   `yaml:"maxresolution"`
-	Hash          string                   `yaml:"hash"`
 	Database      string                   `yaml:"database"`
-	ImageCache    string                   `yaml:"imagecache"`
 	Queries       *confQueries             `yaml:"queries"`
 	Bases         map[string]*confBaseYAML `yaml:"bases"`
 }
@@ -68,9 +64,6 @@ type confBase struct {
 }
 
 type conf struct {
-	MaxResolution image.Point
-	Hash          int
-	ImageCache    string
 	Bases         map[int]*confBase
 	Queries       *confQueries
 	Database      string
@@ -79,7 +72,6 @@ type conf struct {
 // What is generally needed for the functions within the check() line.
 type checkRun struct {
 	hash          int
-	maxResolution image.Point
 	cachePath     string
 	cb            *confBase
 	bc            *baseCache
@@ -117,7 +109,7 @@ type ImageProc struct {
 
 	tm types.TagManager
 
-	im types.IDManager
+	cma types.CacheManager
 
 	// The last configuration reload, the bits that changed.
 	//
@@ -139,7 +131,6 @@ type ImageProc struct {
 const (
 	ucDBConn  = 1 << iota // When the database connection has changed
 	ucDBQuery = 1 << iota // When at least one of the database queries have changed
-	ucMaxRes  = 1 << iota // The maximum resolution was changed
 	ucBaseCI  = 1 << iota // One of the base check intervals changed
 ) // }}}
 

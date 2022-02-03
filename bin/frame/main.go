@@ -232,7 +232,7 @@ func main() {
 		}
 
 		// And next is our real core, the one doing all the real work here, ImageProc.
-		f.ip, err = imgproc.New(f.co.ImageProc, f.tm, f.im, &f.l, f.ctx)
+		f.ip, err = imgproc.New(f.co.ImageProc, f.tm, f.cma, &f.l, f.ctx)
 		if err != nil {
 			f.ip = nil
 			f.l.Err(err).Msg("ImageProc")

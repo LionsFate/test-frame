@@ -15,14 +15,10 @@ package imgproc
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	fimg "frame/image"
 	"frame/tags"
 	"frame/types"
-	"image/png"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -108,11 +104,11 @@ func nextLoop(old uint32) uint32 {
 // Creates a new ImageProc.
 //
 // Checks the configuration, database and loads the cache but does not do any actual processing until Start() is called.
-func New(confPath string, tm types.TagManager, im types.IDManager, l *zerolog.Logger, ctx context.Context) (*ImageProc, error) {
+func New(confPath string, tm types.TagManager, cma types.CacheManager, l *zerolog.Logger, ctx context.Context) (*ImageProc, error) {
 	ip := &ImageProc{
 		l:     l.With().Str("mod", "imgproc").Logger(),
 		tm:    tm,
-		im:    im,
+		cma:   cma,
 		ctx:   ctx,
 		cPath: confPath,
 	}
@@ -654,7 +650,7 @@ func (ip *ImageProc) checkHashTagsDB(cr *checkRun) error {
 					//
 					// Should the timestamp on the file change the error state will be cleared.
 					fc.fileError = true
-					fl.Err(err).Msg("getFileHash")
+					fl.Err(err).Msg("setFileHash")
 
 					// If in shutdown we need to return.
 					if err == types.ErrShutdown {
@@ -689,101 +685,7 @@ func (ip *ImageProc) setFileHash(cr *checkRun, pc *pathCache, fc *fileCache) err
 		return err
 	}
 
-	// Now create the file hash
-	hash := ip.getHash(cr.hash)
-
-	// Lets read in the file to the hash
-	if _, err := io.Copy(hash, f); err != nil {
-		f.Close()
-		fl.Err(err).Msg("copy-hash")
-		return err
-	}
-
-	// Get the hash
-	tHash := hex.EncodeToString(hash.Sum(nil))
-
-	// Hash should never be this small, but we like sanity.
-	if len(tHash) < 3 {
-		f.Close()
-		fl.Warn().Msg("bad hash")
-		return errors.New("Bad hash??")
-	}
-
-	// Convert the hash here to an ID for us.
-	tHID, err := ip.im.GetID(tHash)
-	if err != nil {
-		f.Close()
-		fl.Err(err).Msg("GetID")
-		return err
-	}
-
-	// Did the hash actually change?
-	if tHID == fc.ID {
-		f.Close()
-		// Hash has not changed - no need to create a new image cache.
-		return nil
-	}
-
-	// Update to the new ID
-	fc.ID = tHID
-
-	// Set the bit so the database is properly changed.
-	fc.updated |= upFileHS
-	pc.updated |= upPathFI
-
-	// Now, does the cache file already exist?
-	//
-	// This can happen for any number of reasons, as myself - I have many duplicate files, sadly, and not always the same tags for each.
-	// So its possible another base, or even another file within the same base is a duplicate that already created the cache file.
-	hPath := cr.cachePath + "/" + string(tHash[0]) + "/" + string(tHash[1])
-	fName := hPath + "/" + tHash + ".png"
-
-	if _, err := os.Stat(fName); err == nil {
-		// No error on stat, so the file exists.
-		// Nothing more for us to do.
-		f.Close()
-		fl.Info().Str("hash", tHash).Msg("exists")
-		return nil
-	}
-
-	// Now we need to read the file in for loading the image.
-	//
-	// If the file can seek then we'll just seek, otherwise we have to re-open the file.
-	if seek, ok := f.(io.Seeker); ok {
-		if _, err = seek.Seek(0, io.SeekStart); err != nil {
-			f.Close()
-			fl.Err(err).Msg("seek")
-			return err
-		}
-	} else {
-		// Close the old file for reopening
-		f.Close()
-
-		f, err = cr.bc.bfs.Open(name)
-		if err != nil {
-			fl.Err(err).Msg("open")
-			return err
-		}
-	}
-
-	// Now we defer the close, we didn't do this above since we know we had to possibly close it (if its not an io.Seeker) and re-open.
 	defer f.Close()
-
-	// Check if the path exists or not
-	if _, err := os.Stat(hPath); err != nil {
-		// We expect the path to not exist - Other errors though, we don't expect.
-		if os.IsNotExist(err) {
-			// Create the needed path(s)
-			if err := os.MkdirAll(hPath, 0755); err != nil {
-				fl.Err(err).Msg("mkdirall")
-				return err
-			}
-			fl.Info().Str("hpath", hPath).Msg("path created")
-		} else {
-			fl.Err(err).Str("hpath", hPath).Msg("exists check")
-			return err
-		}
-	}
 
 	// Ok, load the image so we can resize and cache it now.
 	img, err := imaging.Decode(f, imaging.AutoOrientation(true))
@@ -793,34 +695,25 @@ func (ip *ImageProc) setFileHash(cr *checkRun, pc *pathCache, fc *fileCache) err
 		return err
 	}
 
-	// Now we possibly need to resize the image to fit our possible max bounds.
-	oldSize := img.Bounds()
-	newSize := fimg.Shrink(oldSize.Max, cr.maxResolution)
-
-	// Do we need to resize it?
-	if newSize != oldSize.Max {
-		fl.Info().Str("name", name).Stringer("old", oldSize.Max).Stringer("new", newSize).Msg("resize")
-		img = fimg.Resize(img, newSize)
-	}
-
-	// Now we write the image out to the cache location.
-	newF, err := os.Create(fName)
+	// Get the ID for this image.
+	id, err := ip.cma.CacheImage(img)
 	if err != nil {
-		fl.Err(err).Str("file", fName).Msg("create")
+		fl.Err(err).Msg("CacheImage")
 		return err
 	}
 
-	// Write out the image.
-	if err := imaging.Encode(newF, img, imaging.PNG, imaging.PNGCompressionLevel(png.DefaultCompression)); err != nil {
-		fl.Err(err).Str("file", fName).Msg("imaging.Encode")
-		newF.Close()
-		return err
+	// Did the ID change?
+	if id == fc.ID {
+		// Nope, no change.
+		return nil
 	}
 
-	fl.Info().Msg("cached")
+	// Update to the new ID
+	fc.ID = id
 
-	// File created, done.
-	newF.Close()
+	// Set the bit so the database is properly changed.
+	fc.updated |= upFileHS
+	pc.updated |= upPathFI
 
 	return nil
 } // }}}
@@ -860,9 +753,6 @@ func (ip *ImageProc) checkBase(bc *baseCache) {
 	co := ip.getConf()
 
 	cr := &checkRun{
-		cachePath:     co.ImageCache,
-		hash:          co.Hash,
-		maxResolution: co.MaxResolution,
 		cb:            co.Bases[bc.Base],
 		bc:            bc,
 	}
