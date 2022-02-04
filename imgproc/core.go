@@ -306,8 +306,16 @@ func (ip *ImageProc) getFileCache(cr *checkRun, pc *pathCache, file string, modT
 func (ip *ImageProc) getPathCache(cr *checkRun, path string, inheritTags tags.Tags) (*pathCache, error) {
 	fl := ip.l.With().Str("func", "getPathCache").Int("base", cr.bc.Base).Str("path", path).Logger()
 
-	var inherit = true
+	var inherit bool
 	var pathTF string
+
+	// We can only inherit if we have inheritTags to inherit from.
+	//
+	// These are not set when being called during a partial path check
+	// or when called for the root (".") path.
+	if inheritTags != nil {
+		inherit = true
+	}
 
 	// Get the path cache.
 	pc, ok := cr.bc.Paths[path]
