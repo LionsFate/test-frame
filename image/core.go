@@ -11,9 +11,6 @@
 package image
 
 import (
-	//"github.com/anthonynsimon/bild/transform"
-	"github.com/disintegration/imaging"
-	"github.com/rwcarlsen/goexif/exif"
 	"image"
 	"image/draw"
 	_ "image/gif"
@@ -24,6 +21,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/disintegration/imaging"
+	"github.com/rwcarlsen/goexif/exif"
 )
 
 // var imgExtensions {{{

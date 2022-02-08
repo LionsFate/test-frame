@@ -4,6 +4,7 @@ import (
 	"errors"
 	"frame/tags"
 	"image"
+	"io"
 )
 
 var ErrShutdown = errors.New("Shutdown")
@@ -54,19 +55,52 @@ type IDManager interface {
 // type CacheManager interface {{{
 
 // Used to handle all our image caching needs.
+//
+// Because we wanted to make CacheManager able to store and handles images any way
+// it wants to, we avoided using image.Image as a type. Rather CacheManager itself
+// will read and decode the image when CacheImage() is called, and return a raw
+// io.ReadCloser to the caller can likewise decode the image using whatever package
+// they want, be it image.Image or any other.
+//
+// During developement I tried many different image packages and they all performed
+// very differently, especially considering I wanted to run this on x86, x86-64, ARM
+// and ARM64.
+//
+// Pretty much the best way to handle all this is just allowing the callers
+// to provied raw io types back and fourth.
 type CacheManager interface {
-	// Given an open image it will hash the cache using whatever hash method its configured for,
+	// Given a raw io.Reader to an image of either JPEG, PNG, GIF or WebP
+	// it will hash to the cache using whatever hash method its configured for,
 	// cache it and then return the ID provided by IDManager.
 	//
-	// The hash is created by passing the image to png.Encode()
-	// and passing that to hash.Hash.Write().
+	// Note that since this is using an io.Reader, its up to the caller to
+	// call and Close() after it returns if needed (like os.File).
 	//
-	// This happens *after* the image has been resized for the cache.
+	// Only the 4 types above are supported, any other types please use
+	// CacheImage() instead.
+	CacheImageRaw(io.Reader) (uint64, error)
+
+	// Same as CacheImage but with a provieded image.Image, useful for file
+	// types that are not otherwise supported.
 	CacheImage(image.Image) (uint64, error)
 
-	// Given a hash ID originally provided by IDManager this will return an image.Image from the file
-	// opened in the cache.
-	LoadImage(uint64) (image.Image, error)
+	// Given a hash ID originally provided by CacheImage() this will return
+	// an io.ReadCLoser from the file opened in the cache.
+	//
+	// The file can be one of JPEG, PNG, GIF or WebP.
+	// If you do not want to decode the file directly use LoadImage() instead.
+	//
+	// The image will returned will be resized to be no larger then the provided
+	// image.Point.
+	//
+	// If the provided image.Point is 0x0 then the original size will
+	// be returned.
+	//
+	// Note that the caller must call Close() on the provided io.ReadCloser or
+	// risk leaks.
+	LoadImageRaw(uint64, image.Point) (io.ReadCloser, error)
+
+	LoadImage(uint64, image.Point) (image.Image, error)
 } // }}}
 
 // type Profile struct {{{

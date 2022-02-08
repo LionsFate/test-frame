@@ -40,8 +40,7 @@ type CManager struct {
 
 	im types.IDManager
 
-	// A pool for our bytes.Buffer
-	// used for hashing and encoding images.
+	// Pool for our bytes.Buffer
 	bp sync.Pool
 
 	// Used to control shutting down background goroutines.

@@ -9,11 +9,11 @@ import (
 	fimg "frame/image"
 	"frame/types"
 	"image"
-	"image/png"
+	"io"
 	"os"
 	"sync"
 
-	"github.com/disintegration/imaging"
+	vips "github.com/davidbyttow/govips/v2"
 	"github.com/rs/zerolog"
 )
 
@@ -34,7 +34,7 @@ func New(confFile string, im types.IDManager, l *zerolog.Logger, ctx context.Con
 	//
 	// Almost the same as the sync.Pool documentation.
 	cm.bp = sync.Pool{
-			New: func() interface{} { return new(bytes.Buffer) },
+		New: func() interface{} { return new(bytes.Buffer) },
 	}
 
 	fl := cm.l.With().Str("func", "New").Logger()
@@ -130,7 +130,7 @@ func (cm *CManager) getFileName(hash string) (string, error) {
 		}
 	}
 
-	file := path + "/" + hash + ".png"
+	file := path + "/" + hash + ".webp"
 
 	fl.Debug().Str("file", file).Send()
 
@@ -140,46 +140,69 @@ func (cm *CManager) getFileName(hash string) (string, error) {
 // func CManager.CacheImage {{{
 
 func (cm *CManager) CacheImage(img image.Image) (uint64, error) {
-	fl := cm.l.With().Str("func", "CacheImage").Logger()
+	return 0, errors.New("not done")
+} // }}}
 
-	co := cm.getConf()
+// func CManager.CacheImageRaw {{{
 
-	// Lets see if we need to resize the image or not.
-	oldSize := img.Bounds()
-	newSize := fimg.Shrink(oldSize.Max, co.MaxResolution)
-	
-	// Is the size different?
-	if newSize != oldSize.Max {
-		fl.Info().Stringer("old", oldSize.Max).Stringer("new", newSize).Msg("resize")
-		img = fimg.Resize(img, newSize)
-	}
+func (cm *CManager) CacheImageRaw(f io.Reader) (uint64, error) {
+	fl := cm.l.With().Str("func", "CacheImageRaw").Logger()
 
-	buf := cm.bp.Get().(*bytes.Buffer)
-	buf.Reset()
-
-	// Put our buffer back in the pool when done with it.
-	defer cm.bp.Put(buf)
-
-	// Write out the image to our buffer.
-	if err := imaging.Encode(buf, img, imaging.PNG, imaging.PNGCompressionLevel(png.DefaultCompression)); err != nil {
-		fl.Err(err).Msg("imaging.Encode")
+	img, err := vips.NewImageFromReader(f)
+	if err != nil {
+		fl.Err(err).Msg("NewImageFromReader")
 		return 0, err
 	}
 
-	// Get the raw image slice for hashing and writing to a file.
-	imgBytes := buf.Bytes()
+	co := cm.getConf()
+
+	// Get the dimensions to resize if needed.
+	size := image.Point{
+		X: int(img.ResX()),
+		Y: int(img.ResY()),
+	}
+
+	// Lets see if we need to resize the image or not.
+	newSize := fimg.Shrink(size, co.MaxResolution)
+
+	// Is the size different?
+	if newSize != size {
+		var shrink float64
+		fl.Info().Stringer("old", size).Stringer("new", newSize).Msg("resize")
+		if (newSize.X - size.X) < 0 {
+			shrink = float64(newSize.X) / float64(size.X)
+		} else {
+			shrink = float64(newSize.Y) / float64(size.Y)
+		}
+		if err := img.Resize(shrink, vips.KernelAuto); err != nil {
+			fl.Err(err).Msg("Resize")
+			return 0, err
+		}
+	}
+
+	expar := vips.NewDefaultWEBPExportParams()
+
+	// For now we don't want to lose any quality of the original if possible.
+	expar.Lossless = true
+
+	// Now lets get the bytes of the encoded image.
+	buf, _, err := img.Export(expar)
+	if err != nil {
+		fl.Err(err).Msg("Export")
+		return 0, err
+	}
 
 	// Lets get the ID
-	id, hash, err := cm.getID(imgBytes)
+	id, hash, err := cm.getID(buf)
 	if err != nil {
-		fl.Err(err).Send()
+		fl.Err(err).Msg("getID")
 		return 0, err
 	}
 
 	// Get the path the hash should be written to.
 	file, err := cm.getFileName(hash)
 	if err != nil {
-		fl.Err(err).Send()
+		fl.Err(err).Msg("getFileName")
 		return 0, err
 	}
 
@@ -192,28 +215,84 @@ func (cm *CManager) CacheImage(img image.Image) (uint64, error) {
 
 	// Write to a temporary file, so if we get an error we don't leave behind a partially written file
 	// and potentially a broken image.
-	if err := os.WriteFile(file + ".tmp", imgBytes, 0644); err != nil {
+	if err := os.WriteFile(file+".tmp", buf, 0644); err != nil {
 		fl.Err(err).Uint64("id", id).Str("hash", hash).Msg("WriteFile")
 		return id, err
 	}
 
 	// File written without issue so rename it properly.
-	if err := os.Rename(file + ".tmp", file); err != nil {
+	if err := os.Rename(file+".tmp", file); err != nil {
 		fl.Err(err).Uint64("id", id).Str("hash", hash).Msg("Rename")
 		return id, err
 	}
 
-	fl.Info().Uint64("id", id).Msg("cached")
+	fl.Debug().Uint64("id", id).Msg("cached")
 	return id, nil
 } // }}}
 
 // func CManager.LoadImage {{{
 
-func (cm *CManager) LoadImage(id uint64) (image.Image, error) {
+func (cm *CManager) LoadImage(id uint64, fit image.Point) (image.Image, error) {
+	return nil, errors.New("not done")
+} // }}}
+
+// func CManager.LoadImage {{{
+
+func (cm *CManager) LoadImageRaw(id uint64, fit image.Point) (io.ReadCloser, error) {
 	fl := cm.l.With().Str("func", "LoadImage").Uint64("id", id).Logger()
+
+	/*
+	// Lets get the hash for this ID.
+	hash, err := cm.im.GetHash(id)
+	if err != nil {
+		fl.Err(err).Msg("GetHash")
+		return nil, err
+	}
+
+	// Have the hash, now need the file name in our cache.
+	file, err := cm.getFileName(hash)
+	if err != nil {
+		fl.Err(err).Msg("getFileName")
+		return nil, err
+	}
+
+	// Open the file for reading.
+	f, err := os.Open(file)
+	if err != nil {
+		fl.Err(err).Str("file", file).Msg("Open")
+		return nil, err
+	}
+
+	// Ok, load the image so we can resize and cache it now.
+	img, err := imaging.Decode(f, nil)
+	if err != nil {
+		f.Close()
+		// Looks like the file isn't able to be decoded.
+		fl.Err(err).Str("file", file).Msg("imaging.Decode")
+		return nil, err
+	}
+
+	f.Close()
+
+	// Lets see if we need to resize the image or not.
+	// If X or Y is too small we ignore fit.
+	if fit.X > 10 && fit.Y > 10 {
+		oldSize := img.Bounds()
+		newSize := fimg.Shrink(oldSize.Max, fit)
+
+		// Is the size different?
+		if newSize != oldSize.Max {
+			fl.Info().Stringer("old", oldSize.Max).Stringer("new", newSize).Msg("resize")
+			img = fimg.Resize(img, newSize)
+		}
+	}
 
 	fl.Debug().Send()
 
-	return nil, nil
-} // }}}
+	// Ok, return the image.
+	return img, nil
+	*/
 
+	fl.Debug().Send()
+	return nil, errors.New("Not done")
+} // }}}

@@ -27,7 +27,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/disintegration/imaging"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/log/zerologadapter"
 	"github.com/jackc/pgx/v4/pgxpool"
@@ -695,18 +694,10 @@ func (ip *ImageProc) setFileHash(cr *checkRun, pc *pathCache, fc *fileCache) err
 
 	defer f.Close()
 
-	// Ok, load the image so we can resize and cache it now.
-	img, err := imaging.Decode(f, imaging.AutoOrientation(true))
-	if err != nil {
-		// Looks like the file isn't able to be decoded.
-		fl.Err(err).Str("file", name).Msg("imaging.Decode")
-		return err
-	}
-
 	// Get the ID for this image.
-	id, err := ip.cma.CacheImage(img)
+	id, err := ip.cma.CacheImageRaw(f)
 	if err != nil {
-		fl.Err(err).Msg("CacheImage")
+		fl.Err(err).Msg("CacheImageRaw")
 		return err
 	}
 
