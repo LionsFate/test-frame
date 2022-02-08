@@ -13,7 +13,7 @@ import (
 	"os"
 	"sync"
 
-	vips "github.com/davidbyttow/govips/v2"
+	"github.com/davidbyttow/govips/v2/vips"
 	"github.com/rs/zerolog"
 )
 
@@ -148,18 +148,44 @@ func (cm *CManager) CacheImage(img image.Image) (uint64, error) {
 func (cm *CManager) CacheImageRaw(f io.Reader) (uint64, error) {
 	fl := cm.l.With().Str("func", "CacheImageRaw").Logger()
 
-	img, err := vips.NewImageFromReader(f)
+	// Get a new buffer for this image.
+	buf := cm.bp.Get().(*bytes.Buffer)
+	buf.Reset()
+
+	// Put our buffer back in the pool when done with it.
+	defer cm.bp.Put(buf)
+
+	// Read the image into our buffer.
+	if _, err := buf.ReadFrom(f); err != nil {
+		fl.Err(err).Msg("ReadFrom")
+		return 0, err
+	}
+
+	ipar := vips.NewImportParams()
+
+	// Load the image from our buffer.
+	img, err := vips.LoadImageFromBuffer(buf.Bytes(), ipar)
 	if err != nil {
 		fl.Err(err).Msg("NewImageFromReader")
 		return 0, err
+	}
+
+	defer img.Close()
+
+	// Rotate the image if needed.
+	if img.HasExif() {
+		if err := img.AutoRotate(); err != nil {
+			fl.Err(err).Msg("AutoRotate")
+			return 0, err
+		}
 	}
 
 	co := cm.getConf()
 
 	// Get the dimensions to resize if needed.
 	size := image.Point{
-		X: int(img.ResX()),
-		Y: int(img.ResY()),
+		X: img.Height(),
+		Y: img.Width(),
 	}
 
 	// Lets see if we need to resize the image or not.
@@ -169,11 +195,15 @@ func (cm *CManager) CacheImageRaw(f io.Reader) (uint64, error) {
 	if newSize != size {
 		var shrink float64
 		fl.Info().Stringer("old", size).Stringer("new", newSize).Msg("resize")
-		if (newSize.X - size.X) < 0 {
-			shrink = float64(newSize.X) / float64(size.X)
+		sizeX := float64(newSize.X) / float64(size.X)
+		sizeY := float64(newSize.Y) / float64(size.Y)
+
+		if sizeX > sizeY {
+			shrink = sizeX
 		} else {
-			shrink = float64(newSize.Y) / float64(size.Y)
+			shrink = sizeY
 		}
+
 		if err := img.Resize(shrink, vips.KernelAuto); err != nil {
 			fl.Err(err).Msg("Resize")
 			return 0, err
@@ -186,14 +216,14 @@ func (cm *CManager) CacheImageRaw(f io.Reader) (uint64, error) {
 	expar.Lossless = true
 
 	// Now lets get the bytes of the encoded image.
-	buf, _, err := img.Export(expar)
+	nbuf, _, err := img.Export(expar)
 	if err != nil {
 		fl.Err(err).Msg("Export")
 		return 0, err
 	}
 
 	// Lets get the ID
-	id, hash, err := cm.getID(buf)
+	id, hash, err := cm.getID(nbuf)
 	if err != nil {
 		fl.Err(err).Msg("getID")
 		return 0, err
@@ -215,7 +245,7 @@ func (cm *CManager) CacheImageRaw(f io.Reader) (uint64, error) {
 
 	// Write to a temporary file, so if we get an error we don't leave behind a partially written file
 	// and potentially a broken image.
-	if err := os.WriteFile(file+".tmp", buf, 0644); err != nil {
+	if err := os.WriteFile(file+".tmp", nbuf, 0644); err != nil {
 		fl.Err(err).Uint64("id", id).Str("hash", hash).Msg("WriteFile")
 		return id, err
 	}
