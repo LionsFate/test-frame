@@ -43,6 +43,12 @@ type CManager struct {
 	// Pool for our bytes.Buffer
 	bp sync.Pool
 
+	// Used to assign a uinque ID for each log line in the same function.
+	// Helps some confusion when figuring things out.
+	//
+	// Only accessed using atomics.
+	c uint64
+
 	// Used to control shutting down background goroutines.
 	ctx context.Context
 } // }}}

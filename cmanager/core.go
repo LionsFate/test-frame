@@ -12,6 +12,8 @@ import (
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/davidbyttow/govips/v2/vips"
 	"github.com/rs/zerolog"
@@ -146,7 +148,10 @@ func (cm *CManager) CacheImage(img image.Image) (uint64, error) {
 // func CManager.CacheImageRaw {{{
 
 func (cm *CManager) CacheImageRaw(f io.Reader) (uint64, error) {
-	fl := cm.l.With().Str("func", "CacheImageRaw").Logger()
+	c := atomic.AddUint64(&cm.c, 1)
+	s := time.Now()
+
+	fl := cm.l.With().Str("func", "CacheImageRaw").Uint64("c", c).Logger()
 
 	// Get a new buffer for this image.
 	buf := cm.bp.Get().(*bytes.Buffer)
@@ -194,7 +199,6 @@ func (cm *CManager) CacheImageRaw(f io.Reader) (uint64, error) {
 	// Is the size different?
 	if newSize != size {
 		var shrink float64
-		fl.Info().Stringer("old", size).Stringer("new", newSize).Msg("resize")
 		sizeX := float64(newSize.X) / float64(size.X)
 		sizeY := float64(newSize.Y) / float64(size.Y)
 
@@ -204,19 +208,24 @@ func (cm *CManager) CacheImageRaw(f io.Reader) (uint64, error) {
 			shrink = sizeY
 		}
 
+		start := time.Now()
+
 		if err := img.Resize(shrink, vips.KernelAuto); err != nil {
 			fl.Err(err).Msg("Resize")
 			return 0, err
 		}
+
+		fl.Debug().Stringer("old", size).Stringer("new", newSize).Stringer("took", time.Since(start)).Msg("resize")
+
 	}
 
-	expar := vips.NewDefaultWEBPExportParams()
+	expar := vips.NewWebpExportParams()
 
 	// For now we don't want to lose any quality of the original if possible.
-	expar.Lossless = true
+	expar.NearLossless = true
 
 	// Now lets get the bytes of the encoded image.
-	nbuf, _, err := img.Export(expar)
+	nbuf, _, err := img.ExportWebp(expar)
 	if err != nil {
 		fl.Err(err).Msg("Export")
 		return 0, err
@@ -256,7 +265,7 @@ func (cm *CManager) CacheImageRaw(f io.Reader) (uint64, error) {
 		return id, err
 	}
 
-	fl.Debug().Uint64("id", id).Msg("cached")
+	fl.Debug().Uint64("id", id).Str("hash", hash).Stringer("took", time.Since(s)).Msg("cached")
 	return id, nil
 } // }}}
 
@@ -272,55 +281,55 @@ func (cm *CManager) LoadImageRaw(id uint64, fit image.Point) (io.ReadCloser, err
 	fl := cm.l.With().Str("func", "LoadImage").Uint64("id", id).Logger()
 
 	/*
-	// Lets get the hash for this ID.
-	hash, err := cm.im.GetHash(id)
-	if err != nil {
-		fl.Err(err).Msg("GetHash")
-		return nil, err
-	}
-
-	// Have the hash, now need the file name in our cache.
-	file, err := cm.getFileName(hash)
-	if err != nil {
-		fl.Err(err).Msg("getFileName")
-		return nil, err
-	}
-
-	// Open the file for reading.
-	f, err := os.Open(file)
-	if err != nil {
-		fl.Err(err).Str("file", file).Msg("Open")
-		return nil, err
-	}
-
-	// Ok, load the image so we can resize and cache it now.
-	img, err := imaging.Decode(f, nil)
-	if err != nil {
-		f.Close()
-		// Looks like the file isn't able to be decoded.
-		fl.Err(err).Str("file", file).Msg("imaging.Decode")
-		return nil, err
-	}
-
-	f.Close()
-
-	// Lets see if we need to resize the image or not.
-	// If X or Y is too small we ignore fit.
-	if fit.X > 10 && fit.Y > 10 {
-		oldSize := img.Bounds()
-		newSize := fimg.Shrink(oldSize.Max, fit)
-
-		// Is the size different?
-		if newSize != oldSize.Max {
-			fl.Info().Stringer("old", oldSize.Max).Stringer("new", newSize).Msg("resize")
-			img = fimg.Resize(img, newSize)
+		// Lets get the hash for this ID.
+		hash, err := cm.im.GetHash(id)
+		if err != nil {
+			fl.Err(err).Msg("GetHash")
+			return nil, err
 		}
-	}
 
-	fl.Debug().Send()
+		// Have the hash, now need the file name in our cache.
+		file, err := cm.getFileName(hash)
+		if err != nil {
+			fl.Err(err).Msg("getFileName")
+			return nil, err
+		}
 
-	// Ok, return the image.
-	return img, nil
+		// Open the file for reading.
+		f, err := os.Open(file)
+		if err != nil {
+			fl.Err(err).Str("file", file).Msg("Open")
+			return nil, err
+		}
+
+		// Ok, load the image so we can resize and cache it now.
+		img, err := imaging.Decode(f, nil)
+		if err != nil {
+			f.Close()
+			// Looks like the file isn't able to be decoded.
+			fl.Err(err).Str("file", file).Msg("imaging.Decode")
+			return nil, err
+		}
+
+		f.Close()
+
+		// Lets see if we need to resize the image or not.
+		// If X or Y is too small we ignore fit.
+		if fit.X > 10 && fit.Y > 10 {
+			oldSize := img.Bounds()
+			newSize := fimg.Shrink(oldSize.Max, fit)
+
+			// Is the size different?
+			if newSize != oldSize.Max {
+				fl.Info().Stringer("old", oldSize.Max).Stringer("new", newSize).Msg("resize")
+				img = fimg.Resize(img, newSize)
+			}
+		}
+
+		fl.Debug().Send()
+
+		// Ok, return the image.
+		return img, nil
 	*/
 
 	fl.Debug().Send()
