@@ -9,6 +9,7 @@ import (
 	"frame/cmerge"
 	"frame/idmanager"
 	"frame/imgproc"
+	"frame/render"
 	"frame/tagmanager"
 	"frame/types"
 	"frame/weighter"
@@ -65,6 +66,13 @@ type confFile struct {
 	// Optional - If left empty Weighter will not be loaded.
 	Weighter string `yaml:"weighter"`
 
+	// Configure path for Render.
+	//
+	// Optional - If left empty Render will not be loaded.
+	//
+	// Requires Weighter and CacheManager.
+	Render string `yaml:"render"`
+
 	// The path for the hourly log file to be written.
 	// STDOUT and STDERR will be redirected to this file.
 	//
@@ -84,6 +92,7 @@ type frame struct {
 	cm      *cmerge.CMerge
 	cma     *cmanager.CManager
 	we      types.Weighter
+	re      *render.Render
 	curHour int32
 	yc      *yconf.YConf
 	ctx     context.Context
@@ -258,6 +267,28 @@ func main() {
 		if err != nil {
 			f.cm = nil
 			f.l.Err(err).Msg("CMerge")
+			f.close()
+			os.Exit(-1)
+		}
+	}
+
+	if f.co.Render != "" {
+		if f.we == nil {
+			f.l.Err(errors.New("render requires weighter")).Send()
+			f.close()
+			os.Exit(-1)
+		}
+
+		if f.cma == nil {
+			f.l.Err(errors.New("render requires cachemanager")).Send()
+			f.close()
+			os.Exit(-1)
+		}
+
+		f.re, err = render.New(f.co.Render, f.we, f.cma, &f.l, f.ctx)
+		if err != nil {
+			f.re = nil
+			f.l.Err(err).Msg("Render")
 			f.close()
 			os.Exit(-1)
 		}
