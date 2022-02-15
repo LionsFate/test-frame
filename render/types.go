@@ -44,11 +44,16 @@ type confProfileYAML struct {
 // type confProfile struct {{{
 
 type confProfile struct {
-	size          image.Point
-	depth         int
-	tagProfile    string
-	writeInterval time.Duration
-	outputFile    string
+	Size          image.Point
+	Depth         int
+	TagProfile    string
+	WriteInterval time.Duration
+	OutputFile    string
+
+	// Lets us know if renderProfile() is already running or not,
+	// so we don't try to render the same profile multiple times
+	// concurrently.
+	running uint32
 } // }}}
 
 // type confYAML struct {{{
@@ -60,7 +65,25 @@ type confYAML struct {
 
 // type conf struct {{{
 type conf struct {
-	profiles []confProfile
+	// We copy these all over the place and they are read-only once created.
+	//
+	// So just use a reference to save a bit of memory and copy time.
+	Profiles []*confProfile
+} // }}}
+
+// type renderInterval struct {{{
+
+type renderInterval struct {
+	// The next time we are to run the specific check.
+	NextRun time.Time
+
+	NextDur time.Duration
+
+	// The configured render interval
+	WriteInt time.Duration
+
+	// The profile(s) we want to run for this interval.
+	Profiles []*confProfile
 } // }}}
 
 // type Render struct {{{
@@ -83,8 +106,14 @@ type Render struct {
 	// We are in startup, fixes things like notifyConf() being called too soon.
 	start uint32
 
+	// Used to know if the configuration was updated or not.
+	//
+	// When configuration changes this is changed.
+	// Render.loopy() relies on this to know when to regenerate
+	// its check intervals.
+	//
 	// Do not access directly, use atomics.
-	closed uint32
+	updated uint32
 
 	yc *yconf.YConf
 

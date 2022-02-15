@@ -7,6 +7,7 @@ import (
 	"frame/yconf"
 	"image"
 	"math/rand"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -39,13 +40,13 @@ func yconfMerge(inAInt, inBInt interface{}) (interface{}, error) {
 	}
 
 	// Merge the profiles
-	if len(inA.profiles) == 0 {
+	if len(inA.Profiles) == 0 {
 		// If A has no profiles then just assign B.
-		inA.profiles = inB.profiles
+		inA.Profiles = inB.Profiles
 	} else {
 		// Merge in B's profiles.
-		for _, prof := range inB.profiles {
-			inA.profiles = append(inA.profiles, prof)
+		for _, prof := range inB.Profiles {
+			inA.Profiles = append(inA.Profiles, prof)
 		}
 	}
 
@@ -66,14 +67,14 @@ func yconfChanged(origConfInt, newConfInt interface{}) bool {
 		return true
 	}
 
-	if len(origConf.profiles) != len(newConf.profiles) {
+	if len(origConf.Profiles) != len(newConf.Profiles) {
 		return true
 	}
 
-	// Both origConf and newConf.profiles are the same length, so this
+	// Both origConf and newConf.Profiles are the same length, so this
 	// is otherwise safe.
-	for i := 0; i < len(origConf.profiles); i++ {
-		if origConf.profiles[i] != newConf.profiles[i] {
+	for i := 0; i < len(origConf.Profiles); i++ {
+		if origConf.Profiles[i] != newConf.Profiles[i] {
 			return true
 		}
 	}
@@ -96,23 +97,23 @@ func yconfConvert(inInt interface{}) (interface{}, error) {
 	}
 
 	for _, prof := range in.Profiles {
-		op := confProfile{
-			depth:         prof.MaxDepth,
-			tagProfile:    prof.TagProfile,
-			writeInterval: prof.WriteInterval,
-			outputFile:    prof.OutputFile,
+		op := &confProfile{
+			Depth:         prof.MaxDepth,
+			TagProfile:    prof.TagProfile,
+			WriteInterval: prof.WriteInterval,
+			OutputFile:    prof.OutputFile,
 		}
 
 		// Assign defaults.
-		if op.depth < 1 || op.depth > 20 {
-			op.depth = 6
+		if op.Depth < 1 || op.Depth > 20 {
+			op.Depth = 6
 		}
 
-		if op.tagProfile == "" {
+		if op.TagProfile == "" {
 			return nil, errors.New("no TagProfile")
 		}
 
-		if op.outputFile == "" {
+		if op.OutputFile == "" {
 			return nil, errors.New("no OutputFile")
 		}
 
@@ -120,15 +121,15 @@ func yconfConvert(inInt interface{}) (interface{}, error) {
 			return nil, errors.New("no Width or Height")
 		}
 
-		op.size = image.Point{prof.Width, prof.Height}
+		op.Size = image.Point{prof.Width, prof.Height}
 
 		// Default the writeInterval to 5 minutes (60s*5)
-		if op.writeInterval < time.Second {
-			op.writeInterval = time.Second * 300
+		if op.WriteInterval < time.Second {
+			op.WriteInterval = time.Second * 300
 		}
 
 		// Append the profile.
-		out.profiles = append(out.profiles, op)
+		out.Profiles = append(out.Profiles, op)
 	}
 
 	return out, nil
@@ -161,6 +162,12 @@ func New(confPath string, we types.Weighter, cm types.CacheManager, l *zerolog.L
 	// Start the background goroutine that monitors the profile intervals
 	// for writing out the profile images.
 	go re.loopy()
+
+	// We start by rendering an image for each profile.
+	co := re.getConf()
+	for _, prof := range co.Profiles {
+		go re.renderProfile(prof)
+	}
 
 	fl.Debug().Send()
 
@@ -220,6 +227,8 @@ func (re *Render) loadConf() error {
 	}
 
 	// Looks good, go ahead and store it.
+	//
+	// Note we do not update re.updated here as this is the first load.
 	re.co.Store(co)
 
 	return nil
@@ -251,6 +260,9 @@ func (re *Render) notifyConf() {
 	// Store the new configuration
 	re.co.Store(co)
 
+	// So loopy() knows the configuration changed.
+	atomic.AddUint32(&re.updated, 1)
+
 	// Note - We did not check ucPollInt here, thats handled in the partial loop and it will adjust on its next patial run.
 	fl.Info().Msg("configuration updated")
 } // }}}
@@ -260,7 +272,7 @@ func (re *Render) notifyConf() {
 func (re *Render) checkConf(co *conf) bool {
 	fl := re.l.With().Str("func", "checkConf").Logger()
 
-	if len(co.profiles) == 0 {
+	if len(co.Profiles) < 1 {
 		fl.Warn().Msg("No profiles")
 		return false
 	}
@@ -284,12 +296,181 @@ func (re *Render) getConf() *conf {
 	return &conf{}
 } // }}}
 
+// func Render.renderProfile {{{
+
+func (re *Render) renderProfile(prof *confProfile) {
+	fl := re.l.With().Str("func", "renderProfile").Str("OutputFile", prof.OutputFile).Logger()
+
+	// We use an atomic uint32 to let us know if we are already rendering
+	// an image for this profile.
+	if !atomic.CompareAndSwapUint32(&prof.running, 0, 1) {
+		return
+	}
+
+	defer atomic.StoreUint32(&prof.running, 0)
+
+	fl.Debug().Msg("blah blah")
+} // }}}
+
+// func Render.makeRenderIntervals {{{
+
+func (re *Render) makeRenderIntervals() []renderInterval {
+	var added bool
+
+	fl := re.l.With().Str("func", "makeRenderIntervals").Logger()
+	now := time.Now()
+
+	co := re.getConf()
+
+	// Create our array of intervals
+	rInts := make([]renderInterval, 0, len(co.Profiles))
+
+	for _, prof := range co.Profiles {
+		// As we are multiple loops deep when adding profiles, this lets
+		// us know if one was added so we can continue at a higher loop.
+		added = false
+
+		// Does an interval already exist for this profile to tag along on?
+		for i, _ := range rInts {
+			if rInts[i].WriteInt == prof.WriteInterval {
+				// Same duration so just append.
+				rInts[i].Profiles = append(rInts[i].Profiles, prof)
+
+				// Let the lower for loop know to continue.
+				added = true
+				break
+			}
+		}
+
+		if added {
+			continue
+		}
+
+		// No existing duration match, so create a new one and add it.
+		ri := renderInterval{
+			WriteInt: prof.WriteInterval,
+		}
+
+		ri.Profiles = append(ri.Profiles, prof)
+		rInts = append(rInts, ri)
+	}
+
+	// Now set the initial times.
+	for i, _ := range rInts {
+		rInts[i].NextRun = now.Add(rInts[i].WriteInt)
+		rInts[i].NextDur = rInts[i].NextRun.Sub(now)
+	}
+
+	sort.Slice(rInts, func(i, j int) bool {
+		return rInts[i].NextDur < rInts[j].NextDur
+	})
+
+	fl.Debug().Msg("created")
+
+	return rInts
+} // }}}
+
+// func Render.setRenderIntervals {{{
+
+func (re *Render) setRenderIntervals(rInts []renderInterval) []renderInterval {
+	fl := re.l.With().Str("func", "setRenderIntervals").Logger()
+	now := time.Now()
+
+	// Only the first one should ever need to be updated
+	if now.After(rInts[0].NextRun) {
+		rInts[0].NextRun = now.Add(rInts[0].WriteInt)
+		rInts[0].NextDur = rInts[0].NextRun.Sub(now)
+	}
+
+	// Now we checked the first above, but it is very possible for two profiles
+	// needing to fire at the same time.
+	//
+	// Think of a situation where one is every 5 minutes, and another is every 2 minutes.
+	// When the 10 minute check should run they both need to run, so we handle that here.
+	for i, _ := range rInts {
+		if now.After(rInts[i].NextRun) {
+			// Looks like this one could have been skipped.
+			//
+			// So we update it to basically fire right away.
+			rInts[i].NextRun = now.Add(time.Millisecond)
+			rInts[i].NextDur = time.Millisecond
+			continue
+		}
+
+		// It hasn't run yet, but just update its duration, as that keeps shrinking
+		rInts[i].NextDur = rInts[i].NextRun.Sub(now)
+	}
+
+	sort.Slice(rInts, func(i, j int) bool {
+		return rInts[i].NextDur < rInts[j].NextDur
+	})
+
+	fl.Debug().Send()
+
+	return rInts
+} // }}}
+
 // func Render.loopy {{{
 
 // Handles our basic background tasks, partial and full queries.
 func (re *Render) loopy() {
 	fl := re.l.With().Str("func", "loopy").Logger()
 
-	fl.Debug().Send()
+	// Default the render tick to every 5 minutes.
+	rTick := time.NewTicker(5 * time.Minute)
+	defer rTick.Stop()
+
+	ctx := re.ctx
+
+	// So we know when the configuration is updated.
+	ourUpdated := atomic.LoadUint32(&re.updated)
+
+	// Get the initial intervals
+	intervals := re.makeRenderIntervals()
+
+	// Lets change the tick to the first check we need.
+	rTick.Reset(intervals[0].NextDur)
+
+	fl.Debug().Interface("intervals", intervals).Send()
+
+	fl.Debug().Str("OutputFile", intervals[0].Profiles[0].OutputFile).Stringer("NextDur", intervals[0].NextDur).Msg("first tick waiting")
+
+	for {
+		select {
+		case <-rTick.C:
+			// Did the configuration change?
+			if ourUpdated != atomic.LoadUint32(&re.updated) {
+				// Ok, configuration changed so we need to change the render tick
+				// intervals.
+				ourUpdated = atomic.LoadUint32(&re.updated)
+
+				// Update intervals
+				intervals = re.makeRenderIntervals()
+
+				// Update the tick.
+				rTick.Reset(intervals[0].NextDur)
+
+				continue
+			}
+
+			// Run through the profiles for this interval.
+			for _, prof := range intervals[0].Profiles {
+				fl.Debug().Str("file", prof.OutputFile).Msg("profileTick")
+				go re.renderProfile(prof)
+			}
+
+			// Update our intervals
+			intervals = re.setRenderIntervals(intervals)
+
+			// And our baseTick
+			rTick.Reset(intervals[0].NextDur)
+
+			fl.Debug().Str("OutputFile", intervals[0].Profiles[0].OutputFile).Stringer("NextDur", intervals[0].NextDur).Msg("next tick")
+		case _, ok := <-ctx.Done():
+			if !ok {
+				return
+			}
+		}
+	}
 
 } // }}}
