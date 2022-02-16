@@ -153,25 +153,10 @@ func (cm *CManager) CacheImageRaw(f io.Reader) (uint64, error) {
 
 	fl := cm.l.With().Str("func", "CacheImageRaw").Uint64("c", c).Logger()
 
-	// Get a new buffer for this image.
-	buf := cm.bp.Get().(*bytes.Buffer)
-	buf.Reset()
-
-	// Put our buffer back in the pool when done with it.
-	defer cm.bp.Put(buf)
-
-	// Read the image into our buffer.
-	if _, err := buf.ReadFrom(f); err != nil {
-		fl.Err(err).Msg("ReadFrom")
-		return 0, err
-	}
-
-	ipar := vips.NewImportParams()
-
 	// Load the image from our buffer.
-	img, err := vips.LoadImageFromBuffer(buf.Bytes(), ipar)
+	img, err := cm.loadReader(f)
 	if err != nil {
-		fl.Err(err).Msg("NewImageFromReader")
+		fl.Err(err).Msg("loadReader")
 		return 0, err
 	}
 
@@ -269,69 +254,138 @@ func (cm *CManager) CacheImageRaw(f io.Reader) (uint64, error) {
 	return id, nil
 } // }}}
 
-// func CManager.LoadImage {{{
+// func CManager.loadReader {{{
 
-func (cm *CManager) LoadImage(id uint64, fit image.Point) (image.Image, error) {
-	return nil, errors.New("not done")
+func (cm *CManager) loadReader(r io.Reader) (*vips.ImageRef, error) {
+	fl := cm.l.With().Str("func", "loadReader").Logger()
+
+	// Get a new buffer for this image.
+	buf := cm.bp.Get().(*bytes.Buffer)
+	buf.Reset()
+
+	// Put our buffer back in the pool when done with it.
+	defer cm.bp.Put(buf)
+
+	// Read the image into our buffer.
+	if _, err := buf.ReadFrom(r); err != nil {
+		fl.Err(err).Msg("ReadFrom")
+		return nil, err
+	}
+
+	ipar := vips.NewImportParams()
+
+	// Load the image from our buffer.
+	img, err := vips.LoadImageFromBuffer(buf.Bytes(), ipar)
+	if err != nil {
+		fl.Err(err).Msg("NewImageFromReader")
+		return nil, err
+	}
+
+	return img, nil
 } // }}}
 
 // func CManager.LoadImage {{{
 
-func (cm *CManager) LoadImageRaw(id uint64, fit image.Point) (io.ReadCloser, error) {
+func (cm *CManager) LoadImage(id uint64, fit image.Point, enlarge bool) (image.Image, error) {
 	fl := cm.l.With().Str("func", "LoadImage").Uint64("id", id).Logger()
 
-	/*
-		// Lets get the hash for this ID.
-		hash, err := cm.im.GetHash(id)
-		if err != nil {
-			fl.Err(err).Msg("GetHash")
+	// Lets get the hash for this ID.
+	hash, err := cm.im.GetHash(id)
+	if err != nil {
+		fl.Err(err).Msg("GetHash")
+		return nil, err
+	}
+
+	// Have the hash, now need the file name in our cache.
+	file, err := cm.getFileName(hash)
+	if err != nil {
+		fl.Err(err).Msg("getFileName")
+		return nil, err
+	}
+
+	// Open the file for reading.
+	f, err := os.Open(file)
+	if err != nil {
+		fl.Err(err).Str("file", file).Msg("Open")
+		return nil, err
+	}
+
+	img, err := cm.loadReader(f)
+	if err != nil {
+		fl.Err(err).Str("file", file).Msg("loadReader")
+		return nil, err
+	}
+
+	defer img.Close()
+
+	// Get the dimensions for resizing.
+	size := image.Point{
+		X: img.Height(),
+		Y: img.Width(),
+	}
+
+	// Do we shrink the image?
+	newSize := fimg.Shrink(size, fit)
+
+	// Is the size different?
+	if newSize != size {
+		var shrink float64
+		sizeX := float64(newSize.X) / float64(size.X)
+		sizeY := float64(newSize.Y) / float64(size.Y)
+
+		if sizeX > sizeY {
+			shrink = sizeX
+		} else {
+			shrink = sizeY
+		}
+
+		start := time.Now()
+
+		if err := img.Resize(shrink, vips.KernelAuto); err != nil {
+			fl.Err(err).Msg("Resize")
 			return nil, err
 		}
 
-		// Have the hash, now need the file name in our cache.
-		file, err := cm.getFileName(hash)
-		if err != nil {
-			fl.Err(err).Msg("getFileName")
-			return nil, err
-		}
+		fl.Debug().Stringer("old", size).Stringer("new", newSize).Stringer("took", time.Since(start)).Msg("resize")
 
-		// Open the file for reading.
-		f, err := os.Open(file)
-		if err != nil {
-			fl.Err(err).Str("file", file).Msg("Open")
-			return nil, err
-		}
+		// Since we shrank the image, obviously not going to enlarge it now.
+		enlarge = false
+	}
 
-		// Ok, load the image so we can resize and cache it now.
-		img, err := imaging.Decode(f, nil)
-		if err != nil {
-			f.Close()
-			// Looks like the file isn't able to be decoded.
-			fl.Err(err).Str("file", file).Msg("imaging.Decode")
-			return nil, err
-		}
+	// Do we enlarge the image?
+	if enlarge {
+		newSize = fimg.Enlarge(size, fit)
 
-		f.Close()
+		// Is the size different?
+		if newSize != size {
+			var enlar float64
+			sizeX := float64(newSize.X) / float64(size.X)
+			sizeY := float64(newSize.Y) / float64(size.Y)
 
-		// Lets see if we need to resize the image or not.
-		// If X or Y is too small we ignore fit.
-		if fit.X > 10 && fit.Y > 10 {
-			oldSize := img.Bounds()
-			newSize := fimg.Shrink(oldSize.Max, fit)
-
-			// Is the size different?
-			if newSize != oldSize.Max {
-				fl.Info().Stringer("old", oldSize.Max).Stringer("new", newSize).Msg("resize")
-				img = fimg.Resize(img, newSize)
+			if sizeX > sizeY {
+				enlar = sizeX
+			} else {
+				enlar = sizeY
 			}
+
+			start := time.Now()
+
+			if err := img.Resize(enlar, vips.KernelAuto); err != nil {
+				fl.Err(err).Msg("Resize")
+				return nil, err
+			}
+
+			fl.Debug().Stringer("old", size).Stringer("new", newSize).Stringer("took", time.Since(start)).Msg("enlarge")
 		}
+	}
 
-		fl.Debug().Send()
+	exp := vips.NewDefaultPNGExportParams()
 
-		// Ok, return the image.
-		return img, nil
-	*/
+	out, err := img.ToImage(exp)
+	if err != nil {
+		fl.Err(err).Msg("ToImage")
+		return nil, err
+	}
 
-	fl.Debug().Send()
-	return nil, errors.New("Not done")
+	return out, nil
 } // }}}

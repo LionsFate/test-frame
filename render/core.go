@@ -270,11 +270,22 @@ func (re *Render) notifyConf() {
 // func Render.checkConf {{{
 
 func (re *Render) checkConf(co *conf) bool {
+	var err error
+
 	fl := re.l.With().Str("func", "checkConf").Logger()
 
 	if len(co.Profiles) < 1 {
 		fl.Warn().Msg("No profiles")
 		return false
+	}
+
+	// Each profile we have configured must have a proper WeighterProfile
+	// for it as well.
+	for _, prof := range co.Profiles {
+		if prof.wp, err = re.we.GetProfile(prof.TagProfile); err != nil {
+			fl.Err(err).Msg("Weighter.GetProfile")
+			return false
+		}
 	}
 
 	return true
@@ -309,7 +320,62 @@ func (re *Render) renderProfile(prof *confProfile) {
 
 	defer atomic.StoreUint32(&prof.running, 0)
 
-	fl.Debug().Msg("blah blah")
+	start := time.Now()
+
+	// Lets get the image IDs we need, up to a max of Depth.
+	ids, err := prof.wp.Get(prof.Depth)
+	if err != nil {
+		// If Weighter was shutdown, jut return.
+		if errors.Is(err, types.ErrShutdown) {
+			fl.Info().Msg("in shutdown")
+			return
+		}
+
+		// Something went wrong, lets see if we can fix it by getting a new
+		// WeighterProfile.
+		prof.wp, err = re.we.GetProfile(prof.TagProfile)
+		if err != nil {
+			fl.Err(err).Msg("Weighter.GetProfile")
+			return
+		}
+
+		// Ok, take 2 for getting the IDs.
+		if ids, err = prof.wp.Get(prof.Depth); err != nil {
+			fl.Err(err).Msg("WeighterProfile.Get")
+			return
+		}
+	}
+
+	// Ok, we have all the IDs we need.
+	// Create a new blank image.
+	img := image.NewRGBA(image.Rect(0, 0, prof.Size.X, prof.Size.Y))
+
+	// Create our sub image.
+	// This will be a smaller image within the main image, getting
+	// smaller each time a portion of the main image is filled.
+	sub := img
+
+	// Loop through all the IDs we have until we either out or have
+	// too few pixels to place the image within.
+	for _, id := range ids {
+		sub, err = re.fillImage(sub, id)
+		if err != nil {
+			fl.Err(err).Msg("fillImage")
+			return
+		}
+	}
+
+	fl.Debug().Stringer("took", time.Since(start)).Send()
+} // }}}
+
+// func Render.fillImage {{{
+
+func (re *Render) fillImage(img *image.RGBA, id uint64) (*image.RGBA, error) {
+	fl := re.l.With().Str("func", "fillImage").Logger()
+
+	fl.Debug().Send()
+
+	return nil, errors.New("Unfinished")
 } // }}}
 
 // func Render.makeRenderIntervals {{{

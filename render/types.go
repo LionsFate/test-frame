@@ -23,7 +23,7 @@ type confProfileYAML struct {
 	// run out of pixels.
 	//
 	// The default if not set is 6.
-	MaxDepth int `yaml:"maxdepth"`
+	MaxDepth uint8 `yaml:"maxdepth"`
 
 	// This is the profile name passed to Weighter.GetProfile()
 	//
@@ -45,7 +45,7 @@ type confProfileYAML struct {
 
 type confProfile struct {
 	Size          image.Point
-	Depth         int
+	Depth         uint8
 	TagProfile    string
 	WriteInterval time.Duration
 	OutputFile    string
@@ -54,6 +54,15 @@ type confProfile struct {
 	// so we don't try to render the same profile multiple times
 	// concurrently.
 	running uint32
+
+	// The WeighterProfile (from TagProfile above) given by types.Weighter.
+	//
+	// Weighter can invalidate this during runtime, so we may have to
+	// get a new one.
+	//
+	// This value can only be used when you have the "running" advisory lock
+	// above.
+	wp types.WeighterProfile
 } // }}}
 
 // type confYAML struct {{{

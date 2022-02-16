@@ -84,23 +84,21 @@ type CacheManager interface {
 	// types that are not otherwise supported.
 	CacheImage(image.Image) (uint64, error)
 
-	// Given a hash ID originally provided by CacheImage() this will return
-	// an io.ReadCLoser from the file opened in the cache.
+	// Given an ID (uint64) originally provided by CacheImage() this will return
+	// an image.Image
 	//
-	// The file can be one of JPEG, PNG, GIF or WebP.
-	// If you do not want to decode the file directly use LoadImage() instead.
+	// The image will returned will be resized (shrunk) to be no larger then
+	// the provided image.Point.
 	//
-	// The image will returned will be resized to be no larger then the provided
-	// image.Point.
+	// The image will *not* be resized larger then it actually is,
+	// unless the 3rd option (bool) is true.
+	//
+	// Requesting that the image is enlarged can result in pixelated images
+	// so it must be specified.
 	//
 	// If the provided image.Point is 0x0 then the original size will
 	// be returned.
-	//
-	// Note that the caller must call Close() on the provided io.ReadCloser or
-	// risk leaks.
-	LoadImageRaw(uint64, image.Point) (io.ReadCloser, error)
-
-	LoadImage(uint64, image.Point) (image.Image, error)
+	LoadImage(uint64, image.Point, bool) (image.Image, error)
 } // }}}
 
 // type Profile struct {{{
