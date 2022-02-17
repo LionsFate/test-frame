@@ -6,7 +6,10 @@ import (
 	"frame/types"
 	"frame/yconf"
 	"image"
+	"image/draw"
+	"image/jpeg"
 	"math/rand"
+	"os"
 	"sort"
 	"sync/atomic"
 	"time"
@@ -363,19 +366,174 @@ func (re *Render) renderProfile(prof *confProfile) {
 			fl.Err(err).Msg("fillImage")
 			return
 		}
+
+		// If no sub is returned then we have not enough left over space on the image itself to put anymore.
+		if sub == nil {
+			break
+		}
 	}
 
+	// Now we open the file to write out the image.
+	//
+	// We do not defer f.Close since we want to close it right away so we can rename it.
+	f, err := os.OpenFile(prof.OutputFile+".tmp", os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fl.Err(err).Msg("OpenFile")
+		return
+	}
+
+	// Encode the image.
+	if err := jpeg.Encode(f, img, nil); err != nil {
+		f.Close()
+		fl.Err(err).Msg("jpeg.Encode")
+		return
+	}
+
+	f.Close()
+
+	if err := os.Rename(prof.OutputFile+".tmp", prof.OutputFile); err != nil {
+		fl.Err(err).Msg("Rename")
+		return
+	}
+
+	// Ok, image complete.
 	fl.Debug().Stringer("took", time.Since(start)).Send()
 } // }}}
 
+// func Render.toRGBA {{{
+
+func (re *Render) toRGBA(img image.Image) *image.RGBA {
+	// First basic check - Is the image already a RGBA?
+	if rgba, ok := img.(*image.RGBA); ok {
+		// Yep, no conversion needed then.
+		return rgba
+	}
+
+	// So we have to convert. Doing this all ourselves is a pain in the ass, so rather we let Go do it.
+	// We create a new image.RGBA of the same size and copy the pixels to it letting Go handle all the converisions.
+	//
+	// Get the size of the original image.
+	bnds := img.Bounds()
+
+	// Now make a new RGBA image with that size.
+	rgba := image.NewRGBA(bnds)
+
+	// Copy the source to the destination.
+	draw.Draw(rgba, bnds, img, image.Point{}, draw.Src)
+
+	return rgba
+} /// }}}
+
 // func Render.fillImage {{{
 
+// Provided an image and an ID, we fill the image as much as possible by resizing the ID to fit.
+//
+// We then return any portion of the image left that we were unable to fill.
 func (re *Render) fillImage(img *image.RGBA, id uint64) (*image.RGBA, error) {
+	var layoutFlip bool
+
 	fl := re.l.With().Str("func", "fillImage").Logger()
+
+	// Lets get the current image size.
+	imgB := img.Bounds()
+	imgS := imgB.Size()
+
+	// Now get the resized ID image.
+	tmpImg, err := re.cm.LoadImage(id, imgS, true)
+	if err != nil {
+		fl.Err(err).Msg("LoadImage")
+		return nil, err
+	}
+
+	// Ensure its an image.RGBA, so all images are consistent.
+	idImg := re.toRGBA(tmpImg)
+
+	// Ok, we asked the image to be resized to fit at least 1 dimension (width or height) fully.
+	// So unless the image is an exact fit, we expect to have some pixels available on one of
+	// those dimensions.
+	//
+	// Lets figure out which has the most pixels?
+	idB := idImg.Bounds()
+	idS := idB.Size()
+
+	// Sometimes there can be an exact match.
+	//
+	// Do we have one here?
+	if imgS == idS {
+		// Perfeft fit.
+		draw.Draw(img, imgB, idImg, idB.Min, draw.Src)
+		return nil, nil
+	}
+
+	// Do we flip the layout or not?
+	//
+	// Meaning, rather then the top/left, we align to bottom/right
+	if re.r.Intn(2) > 0 {
+		layoutFlip = true
+	}
+
+	// This will be adjusted to whatever area is left over after we figure out where
+	// idImg fits within img.
+	emptySpace := imgB
+
+	// Where idImg will be palced within img.
+	//
+	// We pass this in to draw.Draw() so it can place the image properly.
+	newLoc := imgB
+
+	// Lets figure out the location within img to put idImg.
+	if layoutFlip {
+		// Ok, bottom/left alignment here.
+		//
+		// Is the width the same between the two images?
+		if imgS.X == idS.X {
+			// Ok, width is the same. Not an exact fit, so we expect left over space on the height.
+			//
+			// Since we are flipped, we set the new Min for Y (height) to be from the bottom, leaving any empty
+			// space at the top.
+			//
+			newLoc.Min.Y = imgB.Max.Y - idS.Y
+
+			// Remove the pixels used by the image from the empty space.
+			emptySpace.Max.Y = newLoc.Min.Y
+		} else {
+			// Ok, going by height here.
+			// Pretty much identical to above, except on X (width).
+			newLoc.Min.X = imgB.Max.X - idS.X
+			emptySpace.Max.X = newLoc.Min.X
+		}
+	} else {
+		// We are not flipped.
+		// So rather then placing the image on the bottom/right, we are placing it on the top/left.
+		if imgS.Y == idS.Y {
+			// We have left over width.
+			newLoc.Max.Y = imgB.Min.Y - idS.Y
+
+			// Empty space now starts after the image above, so just set its Min to the previous Max, +1 pixel.
+			emptySpace.Min.Y = newLoc.Max.Y
+		} else {
+			// Left over height.
+			//
+			// Same logic as above, just for X this time.
+			newLoc.Max.X = imgB.Min.X - idS.X
+			emptySpace.Min.X = newLoc.Max.X
+		}
+	}
+
+	// Now copy the image inside out existing one.
+	draw.Draw(img, newLoc, idImg, idImg.Bounds().Min, draw.Src)
+
+	// If emptySpace is too small, we do not return an image.
+	if emptySpace.Max.X < 10 || emptySpace.Max.Y < 10 {
+		return nil, nil
+	}
+
+	// emptySpace is large enough to fit something else, so get it to return.
+	subImg := img.SubImage(emptySpace).(*image.RGBA)
 
 	fl.Debug().Send()
 
-	return nil, errors.New("Unfinished")
+	return subImg, nil
 } // }}}
 
 // func Render.makeRenderIntervals {{{
