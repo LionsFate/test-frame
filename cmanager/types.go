@@ -18,7 +18,7 @@ type confYAML struct {
 
 type conf struct {
 	MaxResolution image.Point
-	ImageCache string
+	ImageCache    string
 }
 
 // type CManager struct {{{

@@ -28,8 +28,6 @@ func (im *IDManager) loadConf() error {
 		return err
 	}
 
-	fl.Debug().Interface("conf", im.yc.Get()).Send()
-
 	// Get the loaded configuration
 	co, ok := im.yc.Get().(*conf)
 	if !ok {
@@ -38,6 +36,8 @@ func (im *IDManager) loadConf() error {
 		fl.Err(err).Send()
 		return err
 	}
+
+	fl.Debug().Interface("conf", co).Send()
 
 	if co == nil || co.Database == "" {
 		err := errors.New("Missing database")

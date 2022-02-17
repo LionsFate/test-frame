@@ -40,15 +40,12 @@ type Weighter struct {
 	// Do not access directly, use atomics.
 	closed uint32
 
-	// We are in startup, fixes things like notifyConf() being called too soon.
-	start uint32
-
 	tm types.TagManager
 
 	yc *yconf.YConf
 
 	// A whitelist of all the tags we care about.
-	// 
+	//
 	// Any image loaded from the database that does not have at least one
 	// of these tags will be ignored and not loaded into our cache.
 	//

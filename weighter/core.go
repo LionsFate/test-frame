@@ -152,10 +152,12 @@ func New(confPath string, tm types.TagManager, l *zerolog.Logger, ctx context.Co
 		tm:    tm,
 		cPath: confPath,
 		ctx:   ctx,
+	}
 
-		// Do not create the hashes, we only add ca here for the mutex.
-		// The hashes is created in doFull()
-		ca: &cache{},
+	// Create our empty cache.
+	we.ca = &cache{
+		images:   make(map[uint64]*cacheImage, 0),
+		profiles: make(map[string]*cacheProfile, 0),
 	}
 
 	fl := we.l.With().Str("func", "New").Logger()
@@ -244,6 +246,11 @@ func (wp *wProfile) Get(num uint8) ([]uint64, error) {
 		num = 100
 	}
 
+	// Sanity - Handle empty profiles.
+	if cp.maxRoll == 0 {
+		return nil, errors.New("no images for tagprofile")
+	}
+
 	ids := wp.we.getRandomProfile(cp, num)
 	return ids, nil
 } // }}}
@@ -251,8 +258,12 @@ func (wp *wProfile) Get(num uint8) ([]uint64, error) {
 // func Weighter.getRandomProfile {{{
 
 func (we *Weighter) getRandomProfile(cp *cacheProfile, num uint8) []uint64 {
+	fl := we.l.With().Str("func", "getRandomProfile").Str("profile", cp.profile).Uint8("num", num).Logger()
+
 	r := we.r
-	
+
+	fl.Debug().Int("maxRoll", cp.maxRoll).Send()
+
 	ids := make([]uint64, num)
 	for i := uint8(0); i < num; i++ {
 		// Get the random weight to use.
@@ -266,7 +277,7 @@ func (we *Weighter) getRandomProfile(cp *cacheProfile, num uint8) []uint64 {
 			}
 
 			// This one matches. So lets grab a random file within.
-			
+
 			ids[i] = wl.IDs[r.Intn(len(wl.IDs))]
 			break
 		}
@@ -384,8 +395,8 @@ func (we *Weighter) makeProfileWeights(ca *cache) error {
 		for weight, ids := range weightMap {
 			wl := &weightList{
 				Weight: weight,
-				Start: start,
-				IDs: ids,
+				Start:  start,
+				IDs:    ids,
 			}
 
 			ncp.weights = append(ncp.weights, wl)
@@ -570,8 +581,8 @@ func (we *Weighter) pollQuery(ca *cache) (bool, error) {
 
 			// First file for this ID, go ahead and create it.
 			img = &cacheImage{
-				ID:      id,
-				Tags:    tgs,
+				ID:   id,
+				Tags: tgs,
 			}
 
 			changed = true
@@ -707,16 +718,6 @@ func (we *Weighter) loadConf() error {
 
 	fl := we.l.With().Str("func", "loadConf").Logger()
 
-	// Avoid us running twice (should not be possible), but more importantly, this will
-	// called notifyConf() before we are ready, so this lets them know to just return.
-	if !atomic.CompareAndSwapUint32(&we.start, 0, 1) {
-		err := errors.New("loadConf already running")
-		fl.Err(err).Send()
-		return err
-	}
-
-	defer atomic.StoreUint32(&we.start, 0)
-
 	// Copy the default ycCallers, we need to copy this so we can add our own notifications.
 	ycc := ycCallers
 
@@ -739,8 +740,6 @@ func (we *Weighter) loadConf() error {
 		return err
 	}
 
-	fl.Debug().Interface("conf", we.yc.Get()).Send()
-
 	// Get the loaded configuration
 	co, ok := we.yc.Get().(*conf)
 	if !ok {
@@ -749,6 +748,8 @@ func (we *Weighter) loadConf() error {
 		fl.Err(err).Send()
 		return err
 	}
+
+	fl.Debug().Interface("conf", co).Send()
 
 	// Check the configuration sanity first.
 	if good, _ := we.checkConf(co, false); !good {
@@ -774,11 +775,6 @@ func (we *Weighter) loadConf() error {
 
 func (we *Weighter) notifyConf() {
 	fl := we.l.With().Str("func", "notifyConf").Logger()
-
-	// If loadConf() is running then we just return right away.
-	if atomic.LoadUint32(&we.start) == 1 {
-		return
-	}
 
 	// Update our configuration.
 	co, ok := we.yc.Get().(*conf)
@@ -848,6 +844,8 @@ func (we *Weighter) yconfConvert(inInt interface{}) (interface{}, error) {
 		return nil, errors.New("not *confYAML")
 	}
 
+	fl.Debug().Interface("yaml", in).Send()
+
 	out := &conf{
 		// No conversion needed here.
 		Database: in.Database,
@@ -875,9 +873,9 @@ func (we *Weighter) yconfConvert(inInt interface{}) (interface{}, error) {
 		ctr := tags.ConfTagRule{
 			// The name doesn't matter since we never use this to assign any tags, so we just call it "nat" (or Not A Tag).
 			// This way each profile doesn't end up being a new tag name in TagManager.
-			Tag: "nat",
-			Any: cProf.Any,
-			All: cProf.All,
+			Tag:  "nat",
+			Any:  cProf.Any,
+			All:  cProf.All,
 			None: cProf.None,
 		}
 
@@ -888,10 +886,10 @@ func (we *Weighter) yconfConvert(inInt interface{}) (interface{}, error) {
 
 		cp := &confProfile{
 			Matches: tr,
-			Name: name,
+			Name:    name,
 		}
 
-		if len(cp.Weights) > 0 {
+		if len(cProf.Weights) > 0 {
 			cp.Weights, err = tags.ConfMakeTagWeights(cProf.Weights, we.tm)
 			if err != nil {
 				return nil, err
@@ -927,7 +925,7 @@ func (we *Weighter) yconfConvert(inInt interface{}) (interface{}, error) {
 // func Weighter.checkConf {{{
 
 func (we *Weighter) checkConf(co *conf, reload bool) (bool, uint64) {
-	var ucBits uint64 
+	var ucBits uint64
 
 	fl := we.l.With().Str("func", "checkConf").Bool("reload", reload).Logger()
 
@@ -960,16 +958,18 @@ func (we *Weighter) checkConf(co *conf, reload bool) (bool, uint64) {
 		fl.Warn().Msg("Need at least 1 profile")
 		return false, 0
 	}
-	
-	// If this isn't a reload, then nothing further to do.
-	if !reload {
-		return true, 0
+
+	for _, prof := range co.Profiles {
+		if len(prof.Weights) < 1 {
+			fl.Warn().Msg("Profile needs at least 1 weight")
+			return false, 0
+		}
 	}
 
-	// Is this our first load?
-	if atomic.LoadUint32(&we.start) == 1 {
-		// Yep, so everything basically changed.
-		return true, ucDBConn|ucDBQuery|ucTagRules|ucProfiles|ucPollInt|ucFullInt
+	// If this isn't a reload, then nothing further to do.
+	if !reload {
+		// Basically everything changed.
+		return true, ucDBConn | ucDBQuery | ucTagRules | ucProfiles | ucPollInt | ucFullInt
 	}
 
 	// Get the old configuration to compare against and figure out what changed.
@@ -1009,17 +1009,17 @@ func (we *Weighter) checkConf(co *conf, reload bool) (bool, uint64) {
 			nProf, ok := oldco.Profiles[name]
 			if !ok {
 				ucBits |= ucProfiles
-				break;
+				break
 			}
 
 			if !oProf.Weights.Equal(nProf.Weights) {
 				ucBits |= ucProfiles
-				break;
+				break
 			}
 
 			if !oProf.Matches.Equal(nProf.Matches) {
 				ucBits |= ucProfiles
-				break;
+				break
 			}
 		}
 	}
@@ -1203,7 +1203,7 @@ func (we *Weighter) loopy() {
 				errors += 1
 
 				// Update the ticker to add the errors.
-				nextPoll.Reset(pollInt * time.Duration(time.Second * time.Duration(errors)))
+				nextPoll.Reset(pollInt * time.Duration(time.Second*time.Duration(errors)))
 			} else {
 				// No error, so reset any possible error count.
 				if errors > 0 {

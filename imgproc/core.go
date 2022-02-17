@@ -752,8 +752,8 @@ func (ip *ImageProc) checkBase(bc *baseCache) {
 	co := ip.getConf()
 
 	cr := &checkRun{
-		cb:            co.Bases[bc.Base],
-		bc:            bc,
+		cb: co.Bases[bc.Base],
+		bc: bc,
 	}
 
 	// Simple check - No '.' path in the cache forces a full.

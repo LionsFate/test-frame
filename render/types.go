@@ -112,9 +112,6 @@ type Render struct {
 	// Can also be a single file if you want to store everything in just one file.
 	cPath string
 
-	// We are in startup, fixes things like notifyConf() being called too soon.
-	start uint32
-
 	// Used to know if the configuration was updated or not.
 	//
 	// When configuration changes this is changed.

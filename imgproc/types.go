@@ -51,9 +51,9 @@ type confQueries struct {
 
 // Pre-converted YAML-friendly configuration.
 type confYAML struct {
-	Database      string                   `yaml:"database"`
-	Queries       *confQueries             `yaml:"queries"`
-	Bases         map[string]*confBaseYAML `yaml:"bases"`
+	Database string                   `yaml:"database"`
+	Queries  *confQueries             `yaml:"queries"`
+	Bases    map[string]*confBaseYAML `yaml:"bases"`
 }
 
 type confBase struct {
@@ -64,17 +64,17 @@ type confBase struct {
 }
 
 type conf struct {
-	Bases         map[int]*confBase
-	Queries       *confQueries
-	Database      string
+	Bases    map[int]*confBase
+	Queries  *confQueries
+	Database string
 }
 
 // What is generally needed for the functions within the check() line.
 type checkRun struct {
-	hash          int
-	cachePath     string
-	cb            *confBase
-	bc            *baseCache
+	hash      int
+	cachePath string
+	cb        *confBase
+	bc        *baseCache
 }
 
 // Convert and Notify are set in New(), as they need access to the loaded *ImageProc.

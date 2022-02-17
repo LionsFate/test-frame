@@ -185,16 +185,6 @@ func (re *Render) loadConf() error {
 
 	fl := re.l.With().Str("func", "loadConf").Logger()
 
-	// Avoid us running twice (should not be possible), but more importantly, this will
-	// called notifyConf() before we are ready, so this lets them know to just return.
-	if !atomic.CompareAndSwapUint32(&re.start, 0, 1) {
-		err := errors.New("loadConf already running")
-		fl.Err(err).Send()
-		return err
-	}
-
-	defer atomic.StoreUint32(&re.start, 0)
-
 	// Copy the default ycCallers, we need to copy this so we can add our own notifications.
 	ycc := ycCallers
 
@@ -241,11 +231,6 @@ func (re *Render) loadConf() error {
 
 func (re *Render) notifyConf() {
 	fl := re.l.With().Str("func", "notifyConf").Logger()
-
-	// If loadConf() is running then we just return right away.
-	if atomic.LoadUint32(&re.start) == 1 {
-		return
-	}
 
 	// Update our configuration.
 	co, ok := re.yc.Get().(*conf)

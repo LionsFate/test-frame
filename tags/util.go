@@ -64,4 +64,3 @@ func LoadTagFile(ffs fs.FS, file string, tm TagManager) (Tags, error) {
 
 	return newTags, nil
 } // }}}
-

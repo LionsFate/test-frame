@@ -448,8 +448,6 @@ func (ip *ImageProc) loadConf() error {
 		return err
 	}
 
-	fl.Debug().Interface("conf", ip.yc.Get()).Send()
-
 	// Get the loaded configuration
 	co, ok := ip.yc.Get().(*conf)
 	if !ok {
@@ -458,6 +456,8 @@ func (ip *ImageProc) loadConf() error {
 		fl.Err(err).Send()
 		return err
 	}
+
+	fl.Debug().Interface("conf", co).Send()
 
 	// We don't care about the changed bits here, because we know this is the first load.
 	good, _ := ip.checkConf(co, false)

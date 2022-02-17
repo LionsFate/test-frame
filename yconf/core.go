@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -52,6 +53,15 @@ func New(confPath string, ca Callers, l *zerolog.Logger, ctx context.Context) (*
 // check the configuration with CheckConf() whenever you want.
 func (yc *YConf) Start() error {
 	fl := yc.l.With().Str("func", "Start").Logger()
+
+	// Lets us know we have started and are running in the background.
+	// Also enables Notify being called.
+	if !atomic.CompareAndSwapUint32(&yc.started, 0, 1) {
+		err := errors.New("already started")
+		fl.Err(err).Send()
+		return err
+	}
+
 	fl.Debug().Msg("Started")
 
 	if err := yc.CheckConf(); err != nil {
@@ -141,6 +151,11 @@ func (yc *YConf) reload() error {
 	yc.loMut.Lock()
 	yc.lo = lo
 	yc.loMut.Unlock()
+
+	// If we are not running in the background then do not call Notify()
+	if atomic.LoadUint32(&yc.started) == 0 {
+		return nil
+	}
 
 	if yc.ca.Notify != nil {
 		go yc.ca.Notify()

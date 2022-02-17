@@ -67,7 +67,9 @@ type Callers struct {
 	Convert Convert
 	Merge   Merge
 	Changed Changed
-	Notify  Notify
+
+	// This is only called after Start() has been called.
+	Notify Notify
 }
 
 type YConf struct {
@@ -82,6 +84,10 @@ type YConf struct {
 
 	// So we know the type we load into.
 	ca Callers
+
+	// So we know if we are running in the background or not.
+	// If we are not we do not call Notify.
+	started uint32
 
 	loMut sync.RWMutex
 	lo    *loaded

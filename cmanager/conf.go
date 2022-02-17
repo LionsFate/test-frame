@@ -30,8 +30,6 @@ func (cm *CManager) loadConf() error {
 		return err
 	}
 
-	fl.Debug().Interface("conf", cm.yc.Get()).Send()
-
 	// Get the loaded configuration
 	co, ok := cm.yc.Get().(*conf)
 	if !ok {
@@ -46,6 +44,8 @@ func (cm *CManager) loadConf() error {
 		fl.Err(err).Send()
 		return err
 	}
+
+	fl.Debug().Interface("conf", co).Send()
 
 	// Sane MaxResolution, no smaller then 720p, there is no upper bound.
 	// If its lower then 720, then we default it to 4k.

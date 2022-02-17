@@ -266,7 +266,7 @@ func main() {
 		f.we, err = weighter.New(f.co.Weighter, f.tm, &f.l, f.ctx)
 		if err != nil {
 			f.cm = nil
-			f.l.Err(err).Msg("CMerge")
+			f.l.Err(err).Msg("Weighter")
 			f.close()
 			os.Exit(-1)
 		}
