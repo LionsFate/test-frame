@@ -505,7 +505,7 @@ func (re *Render) fillImage(img *image.RGBA, id uint64) (*image.RGBA, error) {
 			// Left over width.
 			//
 			// Same logic as above, just for X this time.
-			newLoc.Max.Y = newLoc.Min.X + idS.X
+			newLoc.Max.X = newLoc.Min.X + idS.X
 			emptySpace.Min.X = newLoc.Max.X
 		}
 	}
