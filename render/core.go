@@ -343,6 +343,8 @@ func (re *Render) renderProfile(prof *confProfile) {
 	// smaller each time a portion of the main image is filled.
 	sub := img
 
+	fl.Debug().Uint8("Depth", prof.Depth).Interface("ids", ids).Msg("check")
+
 	// Loop through all the IDs we have until we either out or have
 	// too few pixels to place the image within.
 	for _, id := range ids {
@@ -354,6 +356,7 @@ func (re *Render) renderProfile(prof *confProfile) {
 
 		// If no sub is returned then we have not enough left over space on the image itself to put anymore.
 		if sub == nil {
+			fl.Debug().Uint8("Depth", prof.Depth).Interface("ids", ids).Uint64("id", id).Msg("no more")
 			break
 		}
 	}
@@ -484,7 +487,7 @@ func (re *Render) fillImage(img *image.RGBA, id uint64) (*image.RGBA, error) {
 			// Remove the pixels used by the image from the empty space.
 			emptySpace.Max.Y = newLoc.Min.Y
 		} else {
-			// Ok, going by height here.
+			// Ok, going by width here.
 			// Pretty much identical to above, except on X (width).
 			newLoc.Min.X = imgB.Max.X - idS.X
 			emptySpace.Max.X = newLoc.Min.X
@@ -492,17 +495,17 @@ func (re *Render) fillImage(img *image.RGBA, id uint64) (*image.RGBA, error) {
 	} else {
 		// We are not flipped.
 		// So rather then placing the image on the bottom/right, we are placing it on the top/left.
-		if imgS.Y == idS.Y {
-			// We have left over width.
-			newLoc.Max.Y = imgB.Min.Y - idS.Y
+		if imgS.X == idS.X {
+			// We have left over height.
+			newLoc.Max.Y = newLoc.Min.Y + idS.Y
 
-			// Empty space now starts after the image above, so just set its Min to the previous Max, +1 pixel.
+			// Empty space now starts after the image above, so just set its Min to the previous MaxD.
 			emptySpace.Min.Y = newLoc.Max.Y
 		} else {
-			// Left over height.
+			// Left over width.
 			//
 			// Same logic as above, just for X this time.
-			newLoc.Max.X = imgB.Min.X - idS.X
+			newLoc.Max.Y = newLoc.Min.X + idS.X
 			emptySpace.Min.X = newLoc.Max.X
 		}
 	}
@@ -513,7 +516,8 @@ func (re *Render) fillImage(img *image.RGBA, id uint64) (*image.RGBA, error) {
 	draw.Draw(img, newLoc, idImg, idImg.Bounds().Min, draw.Src)
 
 	// If emptySpace is too small, we do not return an image.
-	if emptySpace.Max.X < 10 || emptySpace.Max.Y < 10 {
+	esS := emptySpace.Bounds().Size()
+	if esS.X < 10 || esS.Y < 10 {
 		return nil, nil
 	}
 
