@@ -445,7 +445,9 @@ func (re *Render) fillImage(img *image.RGBA, id uint64) (*image.RGBA, error) {
 	//
 	// Do we have one here?
 	if imgS == idS {
-		// Perfeft fit.
+		fl.Debug().Stringer("imgS", imgS).Stringer("idS", idS).Msg("perfect fit")
+
+		// Perfect fit.
 		draw.Draw(img, imgB, idImg, idB.Min, draw.Src)
 		return nil, nil
 	}
@@ -504,6 +506,8 @@ func (re *Render) fillImage(img *image.RGBA, id uint64) (*image.RGBA, error) {
 			emptySpace.Min.X = newLoc.Max.X
 		}
 	}
+
+	fl.Debug().Stringer("imgS", imgS).Stringer("idS", idS).Stringer("newLoc", newLoc).Stringer("emptySpace", emptySpace).Bool("layoutFlip", layoutFlip).Msg("dimenstions")
 
 	// Now copy the image inside out existing one.
 	draw.Draw(img, newLoc, idImg, idImg.Bounds().Min, draw.Src)

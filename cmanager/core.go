@@ -174,8 +174,8 @@ func (cm *CManager) CacheImageRaw(f io.Reader) (uint64, error) {
 
 	// Get the dimensions to resize if needed.
 	size := image.Point{
-		X: img.Height(),
-		Y: img.Width(),
+		X: img.Width(),
+		Y: img.Height(),
 	}
 
 	// Lets see if we need to resize the image or not.
@@ -284,9 +284,48 @@ func (cm *CManager) loadReader(r io.Reader) (*vips.ImageRef, error) {
 	return img, nil
 } // }}}
 
+// func CManager.fitPoint {{{
+
+// Given the image point (ip), we want it to fit within wanted point (wp).
+// Return the resulting dimensions and percentage to scale by to achieve it.
+//
+// The returning float64 is what to scale the image to, or 0 if no scaling needed.
+func (cm *CManager) fitPoint(ip image.Point, wp image.Point, enlarge bool) (image.Point, float64) {
+	fl := cm.l.With().Str("func", "fitPoint").Stringer("ip", ip).Stringer("wp", wp).Logger()
+
+	// Quick exit.
+	//
+	// If we do not need to enlarge, and both dimensions are less then wanted, nothing to do.
+	if !enlarge && ip.X < wp.X && ip.Y < wp.Y {
+		fl.Debug().Msg("no enlarge")
+		return ip, 0
+	}
+
+	dx := float64(wp.X) / float64(ip.X)
+	dy := float64(wp.Y) / float64(ip.Y)
+	by := dx
+
+	if dy < dx {
+		by = dy
+	}
+
+	//fl.Debug().Float64("dx", dx).Float64("dy", dy).Float64("by", by).Send()
+
+	np := image.Point{
+		X: int(float64(ip.X) * by),
+		Y: int(float64(ip.Y) * by),
+	}
+
+	fl.Debug().Stringer("np", np).Send()
+
+	return np, by
+} // }}}
+
 // func CManager.LoadImage {{{
 
 func (cm *CManager) LoadImage(id uint64, fit image.Point, enlarge bool) (image.Image, error) {
+	var change float64
+
 	fl := cm.l.With().Str("func", "LoadImage").Uint64("id", id).Logger()
 
 	// Lets get the hash for this ID.
@@ -320,63 +359,21 @@ func (cm *CManager) LoadImage(id uint64, fit image.Point, enlarge bool) (image.I
 
 	// Get the dimensions for resizing.
 	size := image.Point{
-		X: img.Height(),
-		Y: img.Width(),
+		X: img.Width(),
+		Y: img.Height(),
 	}
 
-	// Do we shrink the image?
-	newSize := fimg.Shrink(size, fit)
+	newSize, change := cm.fitPoint(size, fit, enlarge)
 
-	// Is the size different?
-	if newSize != size {
-		var shrink float64
-		sizeX := float64(newSize.X) / float64(size.X)
-		sizeY := float64(newSize.Y) / float64(size.Y)
-
-		if sizeX > sizeY {
-			shrink = sizeX
-		} else {
-			shrink = sizeY
-		}
-
+	if change != 0 {
 		start := time.Now()
 
-		if err := img.Resize(shrink, vips.KernelAuto); err != nil {
+		if err := img.Resize(change, vips.KernelAuto); err != nil {
 			fl.Err(err).Msg("Resize")
 			return nil, err
 		}
 
-		fl.Debug().Stringer("old", size).Stringer("new", newSize).Stringer("took", time.Since(start)).Msg("resize")
-
-		// Since we shrank the image, obviously not going to enlarge it now.
-		enlarge = false
-	}
-
-	// Do we enlarge the image?
-	if enlarge {
-		newSize = fimg.Enlarge(size, fit)
-
-		// Is the size different?
-		if newSize != size {
-			var enlar float64
-			sizeX := float64(newSize.X) / float64(size.X)
-			sizeY := float64(newSize.Y) / float64(size.Y)
-
-			if sizeX > sizeY {
-				enlar = sizeX
-			} else {
-				enlar = sizeY
-			}
-
-			start := time.Now()
-
-			if err := img.Resize(enlar, vips.KernelAuto); err != nil {
-				fl.Err(err).Msg("Resize")
-				return nil, err
-			}
-
-			fl.Debug().Stringer("old", size).Stringer("new", newSize).Stringer("took", time.Since(start)).Msg("enlarge")
-		}
+		fl.Debug().Stringer("old", size).Stringer("new", newSize).Stringer("wanted", fit).Float64("change", change).Stringer("took", time.Since(start)).Msg("resize")
 	}
 
 	exp := vips.NewDefaultPNGExportParams()
