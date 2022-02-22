@@ -3,6 +3,7 @@ package cmanager
 import (
 	"bytes"
 	"context"
+	"hash"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -15,9 +16,27 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/davidbyttow/govips/v2/vips"
 	"github.com/rs/zerolog"
 )
+
+type hashReader struct {
+	h hash.Hash
+	r io.Reader
+}
+
+// func hashReader.Read {{{
+
+// Basically an io.Reader that passes the read bytes for hashing before returning.
+//
+// Allows to read from an io.Reader while also hashing the contents at the same time.
+func (h *hashReader) Read(p []byte) (n int, err error) {
+	n, err = h.r.Read(p)
+
+	// Hash the results first.
+	h.h.Write(p)
+
+	return n, err
+} // }}}
 
 // func New {{{
 
@@ -61,17 +80,11 @@ func New(confFile string, im types.IDManager, l *zerolog.Logger, ctx context.Con
 // func CManager.getID {{{
 
 // Hashes the provided image and returns the ID as assigned by the IDManager.
-func (cm *CManager) getID(imgBytes []byte) (uint64, string, error) {
+func (cm *CManager) getID(hr *hashReader) (uint64, string, error) {
 	fl := cm.l.With().Str("func", "getID").Logger()
 
-	// For hashing.
-	h := sha256.New()
-
-	// Hash the image.
-	h.Write(imgBytes)
-
 	// Get the string hex value.
-	tHash := hex.EncodeToString(h.Sum(nil))
+	tHash := hex.EncodeToString(hr.h.Sum(nil))
 
 	tID, err := cm.im.GetID(tHash)
 	if err != nil {
@@ -132,6 +145,7 @@ func (cm *CManager) getFileName(hash string) (string, error) {
 		}
 	}
 
+	// Our cache is stored as WebP.
 	file := path + "/" + hash + ".webp"
 
 	fl.Debug().Str("file", file).Send()
@@ -153,71 +167,35 @@ func (cm *CManager) CacheImageRaw(f io.Reader) (uint64, error) {
 
 	fl := cm.l.With().Str("func", "CacheImageRaw").Uint64("c", c).Logger()
 
-	// Load the image from our buffer.
-	img, err := cm.loadReader(f)
-	if err != nil {
-		fl.Err(err).Msg("loadReader")
-		return 0, err
+	hr := &hashReader{
+		h: sha256.New(),
+		r: f,
 	}
 
-	defer img.Close()
-
-	// Rotate the image if needed.
-	if img.HasExif() {
-		if err := img.AutoRotate(); err != nil {
-			fl.Err(err).Msg("AutoRotate")
-			return 0, err
-		}
+	// Load the image from our buffer.
+	img, err := fimg.LoadReader(hr)
+	if err != nil {
+		fl.Err(err).Msg("LoadReader")
+		return 0, err
 	}
 
 	co := cm.getConf()
 
 	// Get the dimensions to resize if needed.
-	size := image.Point{
-		X: img.Width(),
-		Y: img.Height(),
-	}
+	size := img.Bounds().Size()
 
 	// Lets see if we need to resize the image or not.
-	newSize := fimg.Shrink(size, co.MaxResolution)
+	newSize, _ := fimg.Fit(size, co.MaxResolution, false)
 
 	// Is the size different?
 	if newSize != size {
-		var shrink float64
-		sizeX := float64(newSize.X) / float64(size.X)
-		sizeY := float64(newSize.Y) / float64(size.Y)
-
-		if sizeX > sizeY {
-			shrink = sizeX
-		} else {
-			shrink = sizeY
-		}
-
 		start := time.Now()
-
-		if err := img.Resize(shrink, vips.KernelAuto); err != nil {
-			fl.Err(err).Msg("Resize")
-			return 0, err
-		}
-
+		img = fimg.Resize(img, newSize)
 		fl.Debug().Stringer("old", size).Stringer("new", newSize).Stringer("took", time.Since(start)).Msg("resize")
-
-	}
-
-	expar := vips.NewWebpExportParams()
-
-	// For now we don't want to lose any quality of the original if possible.
-	expar.NearLossless = true
-
-	// Now lets get the bytes of the encoded image.
-	nbuf, _, err := img.ExportWebp(expar)
-	if err != nil {
-		fl.Err(err).Msg("Export")
-		return 0, err
 	}
 
 	// Lets get the ID
-	id, hash, err := cm.getID(nbuf)
+	id, hash, err := cm.getID(hr)
 	if err != nil {
 		fl.Err(err).Msg("getID")
 		return 0, err
@@ -239,10 +217,21 @@ func (cm *CManager) CacheImageRaw(f io.Reader) (uint64, error) {
 
 	// Write to a temporary file, so if we get an error we don't leave behind a partially written file
 	// and potentially a broken image.
-	if err := os.WriteFile(file+".tmp", nbuf, 0644); err != nil {
-		fl.Err(err).Uint64("id", id).Str("hash", hash).Msg("WriteFile")
+	fo, err := os.Create(file + ".tmp")
+	if err != nil {
+		fl.Err(err).Uint64("id", id).Str("hash", hash).Msg("Create")
 		return id, err
 	}
+
+	if err := fimg.SaveImageWebP(fo, img); err != nil {
+		fl.Err(err).Uint64("id", id).Str("hash", hash).Msg("Encode")
+		fo.Close()
+		return id, err
+	}
+
+	// We do not defer the close since we want to ensure we close the file
+	// before we rename it.
+	fo.Close()
 
 	// File written without issue so rename it properly.
 	if err := os.Rename(file+".tmp", file); err != nil {
@@ -252,73 +241,6 @@ func (cm *CManager) CacheImageRaw(f io.Reader) (uint64, error) {
 
 	fl.Debug().Uint64("id", id).Str("hash", hash).Stringer("took", time.Since(s)).Msg("cached")
 	return id, nil
-} // }}}
-
-// func CManager.loadReader {{{
-
-func (cm *CManager) loadReader(r io.Reader) (*vips.ImageRef, error) {
-	fl := cm.l.With().Str("func", "loadReader").Logger()
-
-	// Get a new buffer for this image.
-	buf := cm.bp.Get().(*bytes.Buffer)
-	buf.Reset()
-
-	// Put our buffer back in the pool when done with it.
-	defer cm.bp.Put(buf)
-
-	// Read the image into our buffer.
-	if _, err := buf.ReadFrom(r); err != nil {
-		fl.Err(err).Msg("ReadFrom")
-		return nil, err
-	}
-
-	ipar := vips.NewImportParams()
-
-	// Load the image from our buffer.
-	img, err := vips.LoadImageFromBuffer(buf.Bytes(), ipar)
-	if err != nil {
-		fl.Err(err).Msg("NewImageFromReader")
-		return nil, err
-	}
-
-	return img, nil
-} // }}}
-
-// func CManager.fitPoint {{{
-
-// Given the image point (ip), we want it to fit within wanted point (wp).
-// Return the resulting dimensions and percentage to scale by to achieve it.
-//
-// The returning float64 is what to scale the image to, or 0 if no scaling needed.
-func (cm *CManager) fitPoint(ip image.Point, wp image.Point, enlarge bool) (image.Point, float64) {
-	fl := cm.l.With().Str("func", "fitPoint").Stringer("ip", ip).Stringer("wp", wp).Logger()
-
-	// Quick exit.
-	//
-	// If we do not need to enlarge, and both dimensions are less then wanted, nothing to do.
-	if !enlarge && ip.X < wp.X && ip.Y < wp.Y {
-		fl.Debug().Msg("no enlarge")
-		return ip, 0
-	}
-
-	dx := float64(wp.X) / float64(ip.X)
-	dy := float64(wp.Y) / float64(ip.Y)
-	by := dx
-
-	if dy < dx {
-		by = dy
-	}
-
-	//fl.Debug().Float64("dx", dx).Float64("dy", dy).Float64("by", by).Send()
-
-	np := image.Point{
-		X: int(float64(ip.X) * by),
-		Y: int(float64(ip.Y) * by),
-	}
-
-	fl.Debug().Stringer("np", np).Send()
-
-	return np, by
 } // }}}
 
 // func CManager.LoadImage {{{
@@ -349,40 +271,24 @@ func (cm *CManager) LoadImage(id uint64, fit image.Point, enlarge bool) (image.I
 		return nil, err
 	}
 
-	img, err := cm.loadReader(f)
+	img, err := fimg.LoadReader(f)
 	if err != nil {
-		fl.Err(err).Str("file", file).Msg("loadReader")
+		fl.Err(err).Str("file", file).Msg("LoadReader")
 		return nil, err
 	}
 
-	defer img.Close()
-
 	// Get the dimensions for resizing.
-	size := image.Point{
-		X: img.Width(),
-		Y: img.Height(),
-	}
+	size := img.Bounds().Size()
 
-	newSize, change := cm.fitPoint(size, fit, enlarge)
+	newSize, change := fimg.Fit(size, fit, enlarge)
 
 	if change != 0 {
 		start := time.Now()
 
-		if err := img.Resize(change, vips.KernelAuto); err != nil {
-			fl.Err(err).Msg("Resize")
-			return nil, err
-		}
+		img = fimg.Resize(img, newSize)
 
 		fl.Debug().Stringer("old", size).Stringer("new", newSize).Stringer("wanted", fit).Float64("change", change).Stringer("took", time.Since(start)).Msg("resize")
 	}
 
-	exp := vips.NewDefaultPNGExportParams()
-
-	out, err := img.ToImage(exp)
-	if err != nil {
-		fl.Err(err).Msg("ToImage")
-		return nil, err
-	}
-
-	return out, nil
+	return img, nil
 } // }}}

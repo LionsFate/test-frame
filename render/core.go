@@ -334,6 +334,14 @@ func (re *Render) renderProfile(prof *confProfile) {
 		}
 	}
 
+	// For very new profiles this can happen that no IDs are returned.
+	//
+	// Or images being taken disabled/deleted that cause a profile to no longer have any.
+	if len(ids) < 1 {
+		fl.Warn().Msg("no images returned, nothing to render")
+		return
+	}
+
 	// Ok, we have all the IDs we need.
 	// Create a new blank image.
 	img := image.NewRGBA(image.Rect(0, 0, prof.Size.X, prof.Size.Y))

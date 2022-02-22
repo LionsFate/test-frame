@@ -949,7 +949,7 @@ func (ip *ImageProc) updateDBPF(cr *checkRun, pc *pathCache) error {
 // func ImageProc.updateDBFile {{{
 
 func (ip *ImageProc) updateDBFile(tx pgx.Tx, cr *checkRun, pid uint64, fc *fileCache) error {
-	fl := ip.l.With().Str("func", "updateDBFile").Uint64("pid", pid).Str("file", fc.Name).Logger()
+	fl := ip.l.With().Str("func", "updateDBFile").Uint64("pid", pid).Int("base", cr.bc.Base).Str("file", fc.Name).Logger()
 
 	// A file without any tags is of no value to the system, and can not be
 	// inserted into the database.

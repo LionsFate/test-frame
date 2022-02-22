@@ -15,288 +15,88 @@ import (
 	"image/draw"
 	_ "image/gif"
 	_ "image/jpeg"
-	_ "image/png"
+	"image/png"
 	"io"
 	"os"
-	"path/filepath"
-	"strconv"
-	"strings"
 
+	"github.com/chai2010/webp"
 	"github.com/disintegration/imaging"
-	"github.com/rwcarlsen/goexif/exif"
 )
-
-// var imgExtensions {{{
-
-var imgExtensions = map[string]bool{
-	".jpg":  true,
-	".jpeg": true,
-	".gif":  true,
-	".png":  true,
-} // }}}
-
-// func Shrink {{{
-
-// Checks if the given image size (orig) needs to be shrunk to fit our dimensions (toFit).
-//
-// It returns the original dimenstions if no change to the size is needed.
-func Shrink(orig, toFit image.Point) image.Point {
-	diffX := toFit.X - orig.X
-	diffY := toFit.Y - orig.Y
-
-	if diffX >= 0 && diffY >= 0 {
-		// No changes needed, so just return our input.
-		return orig
-	}
-
-	newX := orig.X
-	newY := orig.Y
-
-	// Width (X) larger?
-	if diffX < 0 {
-		shrunkBy := float32(toFit.X) / float32(newX)
-		newX = toFit.X
-		newY = int(float32(newY) * shrunkBy)
-		diffY = toFit.Y - newY
-	}
-
-	// Is Height (Y) to large?
-	// Note that the above could have shrunk Y, but it can still be too large.
-	if diffY < 0 {
-		shrunkBy := float32(toFit.Y) / float32(newY)
-		newY = toFit.Y
-		newX = int(float32(newX) * shrunkBy)
-	}
-
-	return image.Point{newX, newY}
-} // }}}
-
-// func Enlarge {{{
-
-func Enlarge(orig, toFit image.Point) image.Point {
-	diffX := toFit.X - orig.X
-	diffY := toFit.Y - orig.Y
-
-	if diffX < 0 && diffY < 0 {
-		// No changes needed, so just return our input.
-		return orig
-	}
-
-	newX := orig.X
-	newY := orig.Y
-
-	// When enlarging we only want to do so once, so we don't check both sides like with Shrink()
-	if diffX < diffY {
-		// Width is the closest, so lets increase by this.
-		newY = int(float32(newY) * (float32(toFit.X) / float32(orig.X)))
-		newX = toFit.X
-	} else {
-		// Height is the closest, so lets increase by this side.
-		newX = int(float32(newX) * (float32(toFit.Y) / float32(orig.Y)))
-		newY = toFit.Y
-	}
-
-	// Now in increasing the size on one side, we made have made the other side too large.
-	// To fix this, we run it through Shrink() to be sure.
-	return Shrink(image.Point{newX, newY}, toFit)
-} // }}}
 
 // func Fit {{{
 
-// This handles returning an image size (orig) that fits (either enlargers or shrinks) to the requested (toFit) dimensions.
+// Given the image point (ip), we want it to fit within wanted point (wp).
+// Return the resulting dimensions and percentage to scale by to achieve it.
 //
-// This combines both Shrink() and Enlarge()
-func Fit(orig, toFit image.Point) image.Point {
-	diffX := toFit.X - orig.X
-	diffY := toFit.Y - orig.Y
-
-	if diffX < 0 || diffY < 0 {
-		return Shrink(orig, toFit)
+// The returning float64 is what to scale the image to, or 0 if no scaling needed.
+func Fit(ip, wp image.Point, enlarge bool) (image.Point, float64) {
+	// Quick exit.
+	//
+	// If we do not need to enlarge, and both dimensions are less then wanted, nothing to do.
+	if !enlarge && ip.X < wp.X && ip.Y < wp.Y {
+		return ip, 0
 	}
 
-	if diffX > 0 || diffY > 0 {
-		return Enlarge(orig, toFit)
+	dx := float64(wp.X) / float64(ip.X)
+	dy := float64(wp.Y) / float64(ip.Y)
+	by := dx
+
+	if dy < dx {
+		by = dy
 	}
 
-	return orig
+	np := image.Point{
+		X: int(float64(ip.X) * by),
+		Y: int(float64(ip.Y) * by),
+	}
+
+	return np, by
+} // }}}
+
+// func LoadReader {{{
+
+// Given an io.Reader attempt to load an image from it.
+//
+// The image will be rotated automatically if needed.
+func LoadReader(r io.Reader) (image.Image, error) {
+	// As this uses image.Decode(), this will still work with any format registered with image, such as WebP above.
+	// Though the AutoOrientation only works with JPEG, even though the other formats do support EXIF.
+	return imaging.Decode(r, imaging.AutoOrientation(true))
+} // }}}
+
+// func SaveImageJPEG {{{
+
+func SaveImageJPEG(w io.Writer, img image.Image) error {
+	return imaging.Encode(w, img, imaging.JPEG, imaging.JPEGQuality(95))
+} // }}}
+
+// func SaveImagePNG {{{
+
+func SaveImagePNG(w io.Writer, img image.Image) error {
+	return imaging.Encode(w, img, imaging.PNG, imaging.PNGCompressionLevel(png.DefaultCompression))
+} // }}}
+
+// func SaveImageWebP {{{
+
+func SaveImageWebP(w io.Writer, img image.Image) error {
+	return webp.Encode(w, img, nil)
 } // }}}
 
 // func Open {{{
 
+// Given a file name attempt to load an image from it.
+//
+// The image will be rotated automatically if needed.
 func Open(file string) (image.Image, error) {
 	f, err := os.Open(file)
 	if err != nil {
 		return nil, err
 	}
 
-	// Attempt to read the image.
-	img, _, err := image.Decode(f)
-	if err != nil {
-		f.Close()
-		return nil, err
-	}
-
+	img, err := LoadReader(f)
 	f.Close()
-	return img, nil
-} // }}}
 
-// func OpenRotate {{{
-
-// The returns an image, handling any needed rotation.
-//
-// If the image was rotated then the bool is set to true, otherwise its false.
-//
-// If the file does not need to be rotated then nil is returned with no error.
-func OpenRotate(file string) (*image.NRGBA, error) {
-	// We know we need the image regardless, so lets go ahead and open it.
-	f, err := os.Open(file)
-	if err != nil {
-		return nil, err
-	}
-
-	defer f.Close()
-
-	// Attempt to read the image.
-	img, _, err := image.Decode(f)
-	if err != nil {
-		return nil, err
-	}
-
-	nrgba := ImageToPrefer(img)
-
-	// Can this image contain EXIF data?
-	if !CanExif(file) {
-		return nrgba, nil
-	}
-
-	// Ok, it can contain exif, does it have any rotation data in it?
-	f.Seek(0, io.SeekStart)
-	rot := MustRotate(f)
-	if rot == 0 {
-		return nrgba, nil
-	}
-
-	/*
-		rotOpts := &transform.RotationOptions{
-			ResizeBounds: true,
-			Pivot:        nil,
-		}*/
-
-	// The transform function is clockwise, while the orentiation is counter-clockwise.
-	// Yeah, what fun.
-	//
-	// Ok, we neeed to rotate it.
-	switch rot {
-	case 1:
-	case 2:
-		//img = transform.FlipV(img)
-		nrgba = imaging.FlipV(nrgba)
-	case 3:
-		//nrgba = transform.Rotate(nrgba, 180, rotOpts)
-		nrgba = imaging.Rotate180(nrgba)
-	case 4:
-		//nrgba = transform.FlipV(nrgba)
-		nrgba = imaging.FlipV(nrgba)
-		//nrgba = transform.Rotate(nrgba, 180, rotOpts)
-		nrgba = imaging.Rotate180(nrgba)
-	case 5:
-		//nrgba = transform.FlipV(nrgba)
-		nrgba = imaging.FlipV(nrgba)
-		//nrgba = transform.Rotate(nrgba, 90, rotOpts)
-		nrgba = imaging.Rotate270(nrgba)
-	case 6:
-		//nrgba = transform.Rotate(nrgba, 90, rotOpts)
-		nrgba = imaging.Rotate270(nrgba)
-	case 7:
-		//nrgba = transform.FlipV(nrgba)
-		nrgba = imaging.FlipV(nrgba)
-		//nrgba = transform.Rotate(nrgba, -90, rotOpts)
-		nrgba = imaging.Rotate90(nrgba)
-	case 8:
-		//nrgba = transform.Rotate(nrgba, -90, rotOpts)
-		nrgba = imaging.Rotate90(nrgba)
-	}
-
-	return nrgba, nil
-} // }}}
-
-// func MustRotate {{{
-
-// This returns the rotation of the file if found in an exif header.
-//
-// This takes a file that it is assumed the caller has some expectation of it including EXIF data (mainly a JPG).
-//
-// If 0 is returned then no rotation was found.
-func MustRotate(f *os.File) int {
-	ex, err := exif.Decode(f)
-	if err != nil {
-		return 0
-	}
-
-	// Lets see if orientation is found in the exif ...
-	o, err := ex.Get(exif.Orientation)
-	if err != nil {
-		return 0
-	}
-
-	// The tiff.Tag type returned likes to panic, which we don't generally like.
-	// So we convert the value to a string, which is less prone to panic, and then
-	// attempt to convert it to an integeer ourselves.
-	i, err := strconv.Atoi(o.String())
-	if err != nil {
-		return 0
-	}
-
-	return i
-} // }}}
-
-// func IsImage {{{
-
-// Returns true if the provided file can be an image, based only the file extension.
-func IsImage(file string) bool {
-	// If the name is too short it can't match.
-	//
-	// Shortest we can match is 5 bytes, something like "1.jpg".
-	if len(file) < 5 {
-		return false
-	}
-
-	// Get the extension.
-	ext := strings.ToLower(filepath.Ext(file))
-
-	if ext == "" {
-		return false
-	}
-
-	if good, ok := imgExtensions[ext]; ok {
-		return good
-	}
-
-	return false
-} // }}}
-
-// func CanExif {{{
-
-// Returns true if the provided file typically can have exif data (such as a JPG).
-func CanExif(file string) bool {
-	// If the name is too short it can't match.
-	//
-	// Shortest we can match is 5 bytes, something like "1.jpg".
-	if len(file) < 5 {
-		return false
-	}
-
-	// Get the extension.
-	ext := strings.ToLower(filepath.Ext(file))
-
-	switch ext {
-	case ".jpg":
-		return true
-	case ".jpeg":
-		return true
-	}
-
-	return false
+	return img, err
 } // }}}
 
 // func Resize {{{
@@ -316,7 +116,7 @@ func CanExif(file string) bool {
 // So I am sticking with nfnt for resizing, as it works best across all platforms I care about.
 //
 // Difference? 1s vs 10m for 1 image, and 2s vs. 22m for another.
-func Resize(img image.Image, size image.Point) *image.NRGBA {
+func Resize(img image.Image, size image.Point) image.Image {
 	return imaging.Resize(img, size.X, size.Y, imaging.Lanczos)
 } // }}}
 
