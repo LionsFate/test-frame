@@ -148,7 +148,6 @@ func New(confPath string, tm types.TagManager, l *zerolog.Logger, ctx context.Co
 
 	we := &Weighter{
 		l:     l.With().Str("mod", "weighter").Logger(),
-		r:     rand.New(rand.NewSource(time.Now().UnixNano())),
 		tm:    tm,
 		cPath: confPath,
 		ctx:   ctx,
@@ -260,14 +259,16 @@ func (wp *wProfile) Get(num uint8) ([]uint64, error) {
 func (we *Weighter) getRandomProfile(cp *cacheProfile, num uint8) []uint64 {
 	fl := we.l.With().Str("func", "getRandomProfile").Str("profile", cp.profile).Uint8("num", num).Logger()
 
-	r := we.r
+	// Mutex for accessing our random number generator.
+	cp.rMut.Lock()
+	defer cp.rMut.Unlock()
 
 	fl.Debug().Int("maxRoll", cp.maxRoll).Send()
 
 	ids := make([]uint64, num)
 	for i := uint8(0); i < num; i++ {
 		// Get the random weight to use.
-		weight := r.Intn(cp.maxRoll)
+		weight := cp.r.Intn(cp.maxRoll)
 
 		// Find the matching weight.
 		for _, wl := range cp.weights {
@@ -278,7 +279,7 @@ func (we *Weighter) getRandomProfile(cp *cacheProfile, num uint8) []uint64 {
 
 			// This one matches. So lets grab a random file within.
 
-			ids[i] = wl.IDs[r.Intn(len(wl.IDs))]
+			ids[i] = wl.IDs[cp.r.Intn(len(wl.IDs))]
 			break
 		}
 	}
@@ -326,7 +327,6 @@ func (we *Weighter) GetProfile(pr string) (types.WeighterProfile, error) {
 
 // func Weighter.makeProfileWeights {{{
 
-// XXX TODO Totally untested, eh?
 func (we *Weighter) makeProfileWeights(ca *cache) error {
 	var weight int
 
@@ -387,6 +387,9 @@ func (we *Weighter) makeProfileWeights(ca *cache) error {
 		start := 0
 		ncp := &cacheProfile{
 			profile: pName,
+
+			// Used in getRandomProfile().
+			r: rand.New(rand.NewSource(time.Now().UnixNano())),
 		}
 
 		ncp.weights = make([]*weightList, 0, len(weightMap))

@@ -5,9 +5,9 @@ import (
 	"errors"
 	"frame/types"
 	"frame/yconf"
+	fimg "frame/image"
 	"image"
 	"image/draw"
-	"image/jpeg"
 	"math/rand"
 	"os"
 	"sort"
@@ -145,7 +145,6 @@ func New(confPath string, we types.Weighter, cm types.CacheManager, l *zerolog.L
 
 	re := &Render{
 		l:     l.With().Str("mod", "render").Logger(),
-		r:     rand.New(rand.NewSource(time.Now().UnixNano())),
 		we:    we,
 		cm:    cm,
 		cPath: confPath,
@@ -356,7 +355,7 @@ func (re *Render) renderProfile(prof *confProfile) {
 	// Loop through all the IDs we have until we either out or have
 	// too few pixels to place the image within.
 	for _, id := range ids {
-		sub, err = re.fillImage(sub, id)
+		sub, err = re.fillImage(sub, id, prof)
 		if err != nil {
 			fl.Err(err).Msg("fillImage")
 			return
@@ -379,9 +378,9 @@ func (re *Render) renderProfile(prof *confProfile) {
 	}
 
 	// Encode the image.
-	if err := jpeg.Encode(f, img, nil); err != nil {
+	if err := fimg.SaveImageWebP(f, img); err != nil {
 		f.Close()
-		fl.Err(err).Msg("jpeg.Encode")
+		fl.Err(err).Msg("SaveImageWebP")
 		return
 	}
 
@@ -425,7 +424,7 @@ func (re *Render) toRGBA(img image.Image) *image.RGBA {
 // Provided an image and an ID, we fill the image as much as possible by resizing the ID to fit.
 //
 // We then return any portion of the image left that we were unable to fill.
-func (re *Render) fillImage(img *image.RGBA, id uint64) (*image.RGBA, error) {
+func (re *Render) fillImage(img *image.RGBA, id uint64, prof *confProfile) (*image.RGBA, error) {
 	var layoutFlip bool
 
 	fl := re.l.With().Str("func", "fillImage").Logger()
@@ -466,9 +465,15 @@ func (re *Render) fillImage(img *image.RGBA, id uint64) (*image.RGBA, error) {
 	// Do we flip the layout or not?
 	//
 	// Meaning, rather then the top/left, we align to bottom/right
-	if re.r.Intn(2) > 0 {
+	prof.rMut.Lock()
+	if prof.r == nil {
+		prof.r = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
+
+	if prof.r.Intn(2) > 0 {
 		layoutFlip = true
 	}
+	prof.rMut.Unlock()
 
 	// This will be adjusted to whatever area is left over after we figure out where
 	// idImg fits within img.

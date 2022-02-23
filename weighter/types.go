@@ -56,10 +56,6 @@ type Weighter struct {
 	// Once created it is read-only, and fully replaced when it changes (not modified).
 	white atomic.Value
 
-	// Random number generator for getting random hashes.
-	// See getRandomProfile() for usage.
-	r *rand.Rand
-
 	// Used to control shutting down background goroutines.
 	ctx context.Context
 } // }}}
@@ -131,6 +127,13 @@ type cacheProfile struct {
 
 	// The TagRule that must apply for this image to be considered for inclusion in this profile or not.
 	tagRule tags.TagRule
+
+	// Random number generator for getting random hashes.
+	// See getRandomProfile() for usage.
+	r *rand.Rand
+
+	// Need to get this mutex for accessing r above.
+	rMut sync.Mutex
 
 	// Access only with atomics.
 	// If set to 1, this profile is no longer valid

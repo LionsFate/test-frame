@@ -79,7 +79,7 @@ func SaveImagePNG(w io.Writer, img image.Image) error {
 // func SaveImageWebP {{{
 
 func SaveImageWebP(w io.Writer, img image.Image) error {
-	return webp.Encode(w, img, nil)
+	return webp.Encode(w, img, &webp.Options{Lossless: true})
 } // }}}
 
 // func Open {{{

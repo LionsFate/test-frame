@@ -6,6 +6,7 @@ import (
 	"frame/yconf"
 	"image"
 	"math/rand"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -53,7 +54,17 @@ type confProfile struct {
 	// Lets us know if renderProfile() is already running or not,
 	// so we don't try to render the same profile multiple times
 	// concurrently.
+	//
+	// We do not use the mutex for this, because that would lock a goroutine and make them
+	// wait. We do not want to wait, any additional goroutines trying to run the profile should just return.
 	running uint32
+
+	// Used to decide location for new image.
+	// Top/Bottom or Left/Right.
+	r *rand.Rand
+
+	// Mutex that controls access to our random number generator.
+	rMut sync.Mutex
 
 	// The WeighterProfile (from TagProfile above) given by types.Weighter.
 	//
@@ -122,10 +133,6 @@ type Render struct {
 	updated uint32
 
 	yc *yconf.YConf
-
-	// Used to decide location for new image.
-	// Top/Bottom or Left/Right.
-	r *rand.Rand
 
 	// Used to control shutting down background goroutines.
 	ctx context.Context
