@@ -330,9 +330,5 @@ ALTER FUNCTION merged_upd() OWNER TO frame ;
 
 CREATE TRIGGER merged_upd BEFORE INSERT OR UPDATE ON files.merged FOR EACH ROW EXECUTE FUNCTION merged_upd();
 
-CREATE OR REPLACE VIEW files.merged_names AS SELECT hid, get_tagnames(tags) AS tags, updated, blocked, enabled FROM files.merged ;
-
-ALTER VIEW IF EXISTS merged_names OWNER TO frame;
-
 -- End Files }}}
 

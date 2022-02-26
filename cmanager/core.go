@@ -32,8 +32,14 @@ type hashReader struct {
 func (h *hashReader) Read(p []byte) (n int, err error) {
 	n, err = h.r.Read(p)
 
-	// Hash the results first.
-	h.h.Write(p)
+	// Hash any returned bytes first.
+	if n > 0 {
+		// This is writing to a hash, so we do not really care about the amount written.
+		// An error however would mean we could not hash this file properly, so that would be bad.
+		if _, herr := h.h.Write(p[0:n]); herr != nil {
+			return n, herr
+		}
+	}
 
 	return n, err
 } // }}}
