@@ -14,10 +14,8 @@ import (
 	"frame/types"
 	"frame/weighter"
 	"frame/yconf"
-	"io"
 	"os"
 	"os/signal"
-	"runtime"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -157,8 +155,10 @@ func main() {
 	// Get our shutdown context
 	f.ctx, f.can = context.WithCancel(context.Background())
 
-	// As this program is meant to start, run, and then stop - Not do anything in the background, we just use our own YAML configuration.
-	f.l = zerolog.New(os.Stdout).With().Timestamp().Logger()
+	// New zerolog that we share with everyone.
+	//
+	// This function handles differences between different systems.
+	f.l = f.newLog()
 
 	// Lets load our flags.
 	flag.StringVar(&f.cFile, "conf", "", "YAML Configuration directory")
@@ -349,17 +349,6 @@ func (f *frame) logLoopy() {
 	}
 } // }}}
 
-// func frame .Write {{{
-
-// This is used for writing to the current hourly log file.
-//
-// Used by zerlog, output is changed by logRotate()
-func (f *frame) Write(p []byte) (n int, err error) {
-	// Get the output file.
-	w := f.out.Load().(io.WriteCloser)
-	return w.Write(p)
-} // }}}
-
 // func frame.logRotate {{{
 
 func (f *frame) logRotate() error {
@@ -367,14 +356,13 @@ func (f *frame) logRotate() error {
 
 	now := time.Now()
 	hour := int32(now.Hour())
-	path := f.co.LogPath
 
 	// If the hour has not changed, nothing to do.
 	if hour == atomic.LoadInt32(&f.curHour) {
 		return nil
 	}
 
-	// Make the log file name.
+	path := f.co.LogPath
 	fileName := "frame." + now.Format("2006-01-02.15") + ".log"
 	fullName := path + "/" + fileName
 
@@ -385,13 +373,7 @@ func (f *frame) logRotate() error {
 
 	fl.Debug().Msg("rotating logfile")
 
-	// Windows has no Dup2 call.
-	if runtime.GOOS != "windows" {
-		// Now replace STDOUT and STDERR, which is what the log file actually points to.
-		fd := int(lf.Fd())
-		syscall.Dup2(fd, 1)
-		syscall.Dup2(fd, 2)
-	}
+	f.logFile(lf)
 
 	// And now we can close the original file we opened
 	lf.Close()
