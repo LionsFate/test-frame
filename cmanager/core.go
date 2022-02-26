@@ -172,14 +172,20 @@ func (cm *CManager) CacheImageRaw(f io.Reader) (uint64, error) {
 		r: f,
 	}
 
+	co := cm.getConf()
+
+	// Get a lock to throttle our resource usage if we need one.
+	if co.BeNice {
+		cm.beNice.Lock()
+		defer cm.beNice.Unlock()
+	}
+
 	// Load the image from our buffer.
 	img, err := fimg.LoadReader(hr)
 	if err != nil {
 		fl.Err(err).Msg("LoadReader")
 		return 0, err
 	}
-
-	co := cm.getConf()
 
 	// Get the dimensions to resize if needed.
 	size := img.Bounds().Size()
@@ -249,6 +255,14 @@ func (cm *CManager) LoadImage(id uint64, fit image.Point, enlarge bool) (image.I
 	var change float64
 
 	fl := cm.l.With().Str("func", "LoadImage").Uint64("id", id).Logger()
+
+	co := cm.getConf()
+
+	// Get a lock to throttle our resource usage if we need one.
+	if co.BeNice {
+		cm.beNice.Lock()
+		defer cm.beNice.Unlock()
+	}
 
 	// Lets get the hash for this ID.
 	hash, err := cm.im.GetHash(id)

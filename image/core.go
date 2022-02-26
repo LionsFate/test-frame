@@ -13,11 +13,12 @@ package image
 import (
 	"image"
 	"image/draw"
-	_ "image/gif"
-	_ "image/jpeg"
 	"image/png"
 	"io"
+	"math"
 	"os"
+	_ "image/gif"
+	_ "image/jpeg"
 
 	"github.com/chai2010/webp"
 	"github.com/disintegration/imaging"
@@ -46,8 +47,8 @@ func Fit(ip, wp image.Point, enlarge bool) (image.Point, float64) {
 	}
 
 	np := image.Point{
-		X: int(float64(ip.X) * by),
-		Y: int(float64(ip.Y) * by),
+		X: int(math.Round(float64(ip.X) * by)),
+		Y: int(math.Round(float64(ip.Y) * by)),
 	}
 
 	return np, by

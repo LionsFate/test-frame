@@ -14,8 +14,11 @@ import (
 	"frame/types"
 	"frame/weighter"
 	"frame/yconf"
+	"io"
 	"os"
 	"os/signal"
+	"runtime"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -83,20 +86,25 @@ type confFile struct {
 // type frame struct {{{
 
 type frame struct {
-	l       zerolog.Logger
-	cFile   string
-	co      *confFile
-	tm      types.TagManager
-	im      types.IDManager
-	ip      *imgproc.ImageProc
-	cm      *cmerge.CMerge
-	cma     *cmanager.CManager
-	we      types.Weighter
-	re      *render.Render
-	curHour int32
-	yc      *yconf.YConf
-	ctx     context.Context
-	can     context.CancelFunc
+	l     zerolog.Logger
+	cFile string
+	co    *confFile
+	tm    types.TagManager
+	im    types.IDManager
+	ip    *imgproc.ImageProc
+	cm    *cmerge.CMerge
+	cma   *cmanager.CManager
+	we    types.Weighter
+	re    *render.Render
+	yc    *yconf.YConf
+	ctx   context.Context
+	can   context.CancelFunc
+
+	// We rotate our log file hourly.
+	//
+	// These handle the logic for that.
+	curHour int32        // Access only using atomics.
+	out     atomic.Value // io.WriteCloser
 } // }}}
 
 var pathsConf = yconf.Callers{
@@ -327,7 +335,7 @@ func (f *frame) logLoopy() {
 			hour := int32(time.Now().Hour())
 
 			// logRotate() will update curHour for us.
-			if hour != f.curHour {
+			if hour != atomic.LoadInt32(&f.curHour) {
 				fl.Debug().Msg("rotate")
 				if err := f.logRotate(); err != nil {
 					f.l.Err(err).Msg("rotate")
@@ -341,6 +349,17 @@ func (f *frame) logLoopy() {
 	}
 } // }}}
 
+// func frame .Write {{{
+
+// This is used for writing to the current hourly log file.
+//
+// Used by zerlog, output is changed by logRotate()
+func (f *frame) Write(p []byte) (n int, err error) {
+	// Get the output file.
+	w := f.out.Load().(io.WriteCloser)
+	return w.Write(p)
+} // }}}
+
 // func frame.logRotate {{{
 
 func (f *frame) logRotate() error {
@@ -351,7 +370,7 @@ func (f *frame) logRotate() error {
 	path := f.co.LogPath
 
 	// If the hour has not changed, nothing to do.
-	if hour == f.curHour {
+	if hour == atomic.LoadInt32(&f.curHour) {
 		return nil
 	}
 
@@ -366,16 +385,19 @@ func (f *frame) logRotate() error {
 
 	fl.Debug().Msg("rotating logfile")
 
-	// Now replace STDOUT and STDERR, which is what the log file actually points to.
-	fd := int(lf.Fd())
-	syscall.Dup2(fd, 1)
-	syscall.Dup2(fd, 2)
+	// Windows has no Dup2 call.
+	if runtime.GOOS != "windows" {
+		// Now replace STDOUT and STDERR, which is what the log file actually points to.
+		fd := int(lf.Fd())
+		syscall.Dup2(fd, 1)
+		syscall.Dup2(fd, 2)
+	}
 
 	// And now we can close the original file we opened
 	lf.Close()
 
 	// Switch the hour
-	f.curHour = hour
+	atomic.StoreInt32(&f.curHour, hour)
 
 	// Is there a link?
 	linkFile := path + "/frame.current"

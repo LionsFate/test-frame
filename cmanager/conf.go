@@ -101,6 +101,11 @@ func yconfMerge(inAInt, inBInt interface{}) (interface{}, error) {
 		}
 	}
 
+	// If any configuration file has benice set, we enable it.
+	if !inA.BeNice && inB.BeNice {
+		inA.BeNice = true
+	}
+
 	return inA, nil
 } // }}}
 
@@ -139,6 +144,7 @@ func yconfConvert(inInt interface{}) (interface{}, error) {
 
 	out := &conf{
 		ImageCache: in.ImageCache,
+		BeNice: in.BeNice,
 	}
 
 	// Convert MaxResolution, if set.

@@ -523,7 +523,7 @@ func (re *Render) fillImage(img *image.RGBA, id uint64, prof *confProfile) (*ima
 		}
 	}
 
-	fl.Debug().Stringer("imgS", imgS).Stringer("idS", idS).Stringer("newLoc", newLoc).Stringer("emptySpace", emptySpace).Bool("layoutFlip", layoutFlip).Msg("dimenstions")
+	fl.Debug().Stringer("imgS", imgS).Stringer("idS", idS).Stringer("newLoc", newLoc).Stringer("emptySpace", emptySpace).Bool("layoutFlip", layoutFlip).Msg("dimensions")
 
 	// Now copy the image inside out existing one.
 	draw.Draw(img, newLoc, idImg, idImg.Bounds().Min, draw.Src)

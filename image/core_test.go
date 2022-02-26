@@ -22,6 +22,7 @@ func TestFitPoint(t *testing.T) {
 		{image.Point{3200, 1800}, image.Point{1800, 1273}, image.Point{2545, 1800}, 0, true},
 		{image.Point{2960, 1800}, image.Point{629, 1367}, image.Point{828, 1800}, 0, true},
 		{image.Point{2960, 1800}, image.Point{629, 1367}, image.Point{629, 1367}, 0, false},
+		{image.Point{1440, 1560}, image.Point{1318, 862}, image.Point{1440, 942}, 0, true},
 	}
 
 	for _, test := range tests {
