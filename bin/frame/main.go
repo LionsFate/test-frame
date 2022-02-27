@@ -102,7 +102,9 @@ type frame struct {
 	//
 	// These handle the logic for that.
 	curHour int32        // Access only using atomics.
-	out     atomic.Value // io.WriteCloser
+
+	// see rotate_windows.go
+	lw logWrite
 } // }}}
 
 var pathsConf = yconf.Callers{

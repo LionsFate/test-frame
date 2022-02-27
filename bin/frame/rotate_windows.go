@@ -3,21 +3,34 @@
 package main
 
 import (
-	"time"
 	"os"
+	"sync"
 
 	"github.com/rs/zerolog"
 )
+
+// type logWrite struct {{{
+
+type logWrite struct {
+	mut sync.RWMutex
+	out *os.File // nil = os.Stdout
+} // }}}
 
 // func frame.Write {{{
 
 // This is used for writing to the current hourly log file.
 //
 // Used by zerlog, output is changed by logRotate()
-func (f *frame) Write(p []byte) (n int, err error) {
-	// Get the output file.
-	w := f.out.Load().(*os.File)
-	return w.Write(p)
+func (lw *logWrite) Write(p []byte) (n int, err error) {
+	lw.mut.RLock()
+	if lw.out == nil { // os.Stdout, no actual file assigned yet.
+		n, err = os.Stdout.Write(p)
+	} else {
+		n, err = lw.out.Write(p)
+	}
+	lw.mut.RUnlock()
+
+	return
 } // }}}
 
 // func frame.link {{{
@@ -29,30 +42,23 @@ func (f *frame) link(fileName string) {
 // func frame.newLog {{{
 
 func (f *frame) newLog() zerolog.Logger {
-	// Set our output to STDOUT by default.
-	f.out.Store(os.Stdout)
-
 	// New zerolog that outputs to us, through our Write()
-	return zerolog.New(f).With().Timestamp().Logger()
+	return zerolog.New(&f.lw).With().Timestamp().Logger()
 } // }}}
 
 // func frame.logFile {{{
 
 func (f *frame) logFile(lf *os.File) {
-	// We need the old file first to save.
-	old := f.out.Load().(*os.File)
+	// Rotate the log file.
+	f.lw.mut.Lock()
+	// Keep the old file in case we need to close it.
+	old := f.lw.out
+	f.lw.out = lf
+	f.lw.mut.Unlock()
 
-	// And save the new one.
-	f.out.Store(lf)
-
-	// Now close the old one (provided its not STDOUT).
-	if old != os.Stdout {
-		go func() {
-			// Give it about 10 seconds before we close out the old file.
-			time.Sleep(10*time.Second)
-			old.Close()
-		}()
+	// Now close the old one.
+	// If its nil that means we were logging to os.Stdout.
+	if old != nil {
+		old.Close()
 	}
-
-	// We do not close lf here, it will be closed when the log file rotates.
 } // }}}

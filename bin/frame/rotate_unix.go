@@ -9,6 +9,12 @@ import (
 	"github.com/rs/zerolog"
 )
 
+// type logWrite struct {{{
+
+type logWrite struct {
+	// Intentionally left blank for non-Windows systems.
+} // }}}
+
 // func frame.link {{{
 
 func (f *frame) link(fileName string) {
