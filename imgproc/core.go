@@ -215,7 +215,7 @@ func (ip *ImageProc) loadTagFile(cr *checkRun, pc *pathCache, file, image string
 	fc.loopS = pc.loop
 
 	// Did the time on the sidecar change?
-	ptime := modTime.Round(time.Millisecond)
+	ptime := modTime.UTC().Round(time.Second)
 	if ptime.Equal(fc.SideTS) {
 		// Time is the same, so nothing more to do.
 		return nil
@@ -280,7 +280,7 @@ func (ip *ImageProc) getFileCache(cr *checkRun, pc *pathCache, file string, modT
 	fc.loopF = pc.loop
 
 	// Update the last modified time?
-	ptime := modTime.Round(time.Millisecond)
+	ptime := modTime.UTC().Round(time.Second)
 	if ptime.Equal(fc.FileTS) {
 		return fc, nil
 	}
@@ -352,7 +352,7 @@ func (ip *ImageProc) getPathCache(cr *checkRun, path string, inheritTags tags.Ta
 	//
 	// Note that we round the ModTime() here to the millisecond, as I found that PostgreSQL does its own rounding of the number.
 	// This would cause the value we INSERT to be different in the SELECT, and thus cause the times to never match properly.
-	ptime := fstat.ModTime().Round(time.Millisecond)
+	ptime := fstat.ModTime().UTC().Round(time.Second)
 	if !ptime.Equal(pc.Changed) {
 		fl.Info().Msg("Time changed")
 		pc.Changed = ptime
@@ -384,7 +384,7 @@ func (ip *ImageProc) getPathCache(cr *checkRun, path string, inheritTags tags.Ta
 			return nil, fmt.Errorf("tfstat(%s): %w", path, err)
 		}
 
-		tfMTime := tfStat.ModTime().Round(time.Millisecond)
+		tfMTime := tfStat.ModTime().UTC().Round(time.Second)
 
 		if !tfMTime.Equal(pc.SideTS) {
 			// Load the tag file here!
@@ -1163,6 +1163,12 @@ func (ip *ImageProc) setupDB(co *conf, db *pgx.Conn) error {
 
 	queries := co.Queries
 
+	// Set our timezone.
+	if _, err := db.Exec(ip.ctx, "SET TIMEZONE TO UTC"); err != nil {
+		fl.Err(err).Msg("UTC")
+		return err
+	}
+
 	// Lets prepare all our statements
 	if _, err := db.Prepare(ip.ctx, "paths-select", queries.PathsSelect); err != nil {
 		fl.Err(err).Msg("paths-select")
@@ -1319,8 +1325,8 @@ func (ip *ImageProc) addBaseCache(cb *confBase, ca *cache, db *pgxpool.Pool) err
 			id:      inID,
 			Path:    name,
 			Tags:    tgs.Copy(),
-			SideTS:  sidets,
-			Changed: changed,
+			SideTS:  sidets.UTC().Round(time.Second),
+			Changed: changed.UTC().Round(time.Second),
 			Files:   make(map[string]*fileCache, 1),
 		}
 
