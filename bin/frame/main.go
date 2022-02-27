@@ -373,25 +373,15 @@ func (f *frame) logRotate() error {
 
 	fl.Debug().Msg("rotating logfile")
 
+	// This will close the file for us.
 	f.logFile(lf)
-
-	// And now we can close the original file we opened
-	lf.Close()
 
 	// Switch the hour
 	atomic.StoreInt32(&f.curHour, hour)
 
-	// Is there a link?
-	linkFile := path + "/frame.current"
-
-	// Create our new temporary symlink
-	if err := os.Symlink(fileName, linkFile+".tmp"); err != nil {
-		fl.Err(err).Msg("Symlink")
-		return err
-	}
-
-	// Atomic rename
-	os.Rename(linkFile+".tmp", linkFile)
+	// Create the symlink if needed.
+	// Does nothing on Windows.
+	f.link(fileName)
 
 	return nil
 } // }}}
