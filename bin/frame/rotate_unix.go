@@ -12,6 +12,8 @@ import (
 // func frame.link {{{
 
 func (f *frame) link(fileName string) {
+	fl := f.l.With().Str("func", "link").Logger()
+
 	path := f.co.LogPath
 
 	// Is there a link?
@@ -20,7 +22,7 @@ func (f *frame) link(fileName string) {
 	// Create our new temporary symlink
 	if err := os.Symlink(fileName, linkFile+".tmp"); err != nil {
 		fl.Err(err).Msg("Symlink")
-		return err
+		return
 	}
 
 	// Atomic rename
