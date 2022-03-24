@@ -3,9 +3,9 @@ package render
 import (
 	"context"
 	"errors"
+	fimg "frame/image"
 	"frame/types"
 	"frame/yconf"
-	fimg "frame/image"
 	"image"
 	"image/draw"
 	"math/rand"
@@ -53,6 +53,14 @@ func yconfMerge(inAInt, inBInt interface{}) (interface{}, error) {
 		}
 	}
 
+	if len(inA.MixProfiles) == 0 {
+		inA.MixProfiles = inB.MixProfiles
+	} else {
+		for _, prof := range inB.MixProfiles {
+			inA.MixProfiles = append(inA.MixProfiles, prof)
+		}
+	}
+
 	return inA, nil
 } // }}}
 
@@ -82,6 +90,16 @@ func yconfChanged(origConfInt, newConfInt interface{}) bool {
 		}
 	}
 
+	if len(origConf.MixProfiles) != len(newConf.MixProfiles) {
+		return true
+	}
+
+	for i := 0; i < len(origConf.MixProfiles); i++ {
+		if origConf.MixProfiles[i] != newConf.MixProfiles[i] {
+			return true
+		}
+	}
+
 	return false
 } // }}}
 
@@ -95,7 +113,7 @@ func yconfConvert(inInt interface{}) (interface{}, error) {
 
 	out := &conf{}
 
-	if len(in.Profiles) < 1 {
+	if len(in.Profiles) < 1 && len(in.MixProfiles) < 1 {
 		return nil, errors.New("file has no profiles")
 	}
 
@@ -135,6 +153,40 @@ func yconfConvert(inInt interface{}) (interface{}, error) {
 		out.Profiles = append(out.Profiles, op)
 	}
 
+	for _, prof := range in.MixProfiles {
+		op := &confProfileMixed{
+			WriteInterval: prof.WriteInterval,
+			OutputFile:    prof.OutputFile,
+		}
+
+		if op.OutputFile == "" {
+			return nil, errors.New("no OutputFile")
+		}
+
+		if prof.Width == 0 || prof.Height == 0 {
+			return nil, errors.New("no Width or Height")
+		}
+
+		op.Size = image.Point{prof.Width, prof.Height}
+
+		// Default the writeInterval to 5 minutes (60s*5)
+		if op.WriteInterval < time.Second {
+			op.WriteInterval = time.Second * 300
+		}
+
+		for _, pcount := range prof.Profiles {
+			cp := confProfileCounts{
+				TagProfile: pcount.TagProfile,
+				images:     pcount.Images,
+			}
+
+			op.Profiles = append(op.Profiles, cp)
+		}
+
+		// Append the profile.
+		out.MixProfiles = append(out.MixProfiles, op)
+	}
+
 	return out, nil
 } // }}}
 
@@ -169,6 +221,10 @@ func New(confPath string, we types.Weighter, cm types.CacheManager, l *zerolog.L
 	co := re.getConf()
 	for _, prof := range co.Profiles {
 		go re.renderProfile(prof)
+	}
+
+	for _, prof := range co.MixProfiles {
+		go re.renderProfileMixed(prof)
 	}
 
 	fl.Debug().Send()
@@ -275,6 +331,17 @@ func (re *Render) checkConf(co *conf) bool {
 		}
 	}
 
+	// Same as above, check the WeighterProfile for each MixProfile.
+	for _, prof := range co.MixProfiles {
+		// Note - prof.Profiles are not references, so access them differently.
+		for i := 0; i < len(prof.Profiles); i++ {
+			if prof.Profiles[i].wp, err = re.we.GetProfile(prof.Profiles[i].TagProfile); err != nil {
+				fl.Err(err).Msg("Weighter.GetProfile")
+				return false
+			}
+		}
+	}
+
 	return true
 } // }}}
 
@@ -294,6 +361,145 @@ func (re *Render) getConf() *conf {
 	return &conf{}
 } // }}}
 
+// func Render.renderImage {{{
+
+// r can be null, in which case a temporary random number generator is used.
+// No other value can be null.
+func (re *Render) renderImage(size image.Point, file string, ids []uint64) error {
+	var err error
+
+	fl := re.l.With().Str("func", "renderImage").Str("OutputFile", file).Logger()
+
+	// Used to determine the location of the next image.
+	// Top/Left or Bottom/Right.
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+
+	start := time.Now()
+
+	// For very new profiles this can happen that no IDs are returned.
+	//
+	// Or images being taken disabled/deleted that cause a profile to no longer have any.
+	if len(ids) < 1 {
+		err = errors.New("no IDs provided")
+		fl.Err(err).Send()
+		return err
+	}
+
+	// Ok, we have all the IDs we need.
+	// Create a new blank image.
+	img := image.NewRGBA(image.Rect(0, 0, size.X, size.Y))
+
+	// Create our sub image.
+	// This will be a smaller image within the main image, getting
+	// smaller each time a portion of the main image is filled.
+	sub := img
+
+	fl.Debug().Interface("ids", ids).Msg("check")
+
+	// Loop through all the IDs we have until we either out or have
+	// too few pixels to place the image within.
+	for _, id := range ids {
+		sub, err = re.fillImage(sub, id, r)
+		if err != nil {
+			fl.Err(err).Msg("fillImage")
+			return err
+		}
+
+		// If no sub is returned then we have not enough left over space on the image itself to put anymore.
+		if sub == nil {
+			fl.Debug().Interface("ids", ids).Uint64("id", id).Msg("no more")
+			break
+		}
+	}
+
+	// Now we open the file to write out the image.
+	//
+	// We do not defer f.Close since we want to close it right away so we can rename it.
+	f, err := os.OpenFile(file+".tmp", os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fl.Err(err).Msg("OpenFile")
+		return err
+	}
+
+	// Encode the image.
+	if err := fimg.SaveImageWebP(f, img); err != nil {
+		f.Close()
+		fl.Err(err).Msg("SaveImageWebP")
+		return err
+	}
+
+	f.Close()
+
+	if err := os.Rename(file+".tmp", file); err != nil {
+		fl.Err(err).Msg("Rename")
+		return err
+	}
+
+	// Ok, image complete.
+	fl.Debug().Stringer("took", time.Since(start)).Send()
+
+	return nil
+} // }}}
+
+// func Render.renderProfileMixed {{{
+
+func (re *Render) renderProfileMixed(prof *confProfileMixed) {
+	var ids []uint64
+
+	fl := re.l.With().Str("func", "renderProfileMixed").Str("OutputFile", prof.OutputFile).Logger()
+
+	// We use an atomic uint32 to let us know if we are already rendering
+	// an image for this profile.
+	if !atomic.CompareAndSwapUint32(&prof.running, 0, 1) {
+		return
+	}
+
+	defer atomic.StoreUint32(&prof.running, 0)
+
+	// Loop through the mixed profiles to get the IDs we want.
+	for _, cpc := range prof.Profiles {
+		// Lets get the image IDs we need, up to a max of Depth.
+		tids, err := cpc.wp.Get(cpc.images)
+		if err != nil {
+			// If Weighter was shutdown, jut return.
+			if errors.Is(err, types.ErrShutdown) {
+				fl.Info().Msg("in shutdown")
+				return
+			}
+
+			// Something went wrong, lets see if we can fix it by getting a new
+			// WeighterProfile.
+			cpc.wp, err = re.we.GetProfile(cpc.TagProfile)
+			if err != nil {
+				fl.Err(err).Msg("Weighter.GetProfile")
+				return
+			}
+
+			// Ok, take 2 for getting the IDs.
+			if tids, err = cpc.wp.Get(cpc.images); err != nil {
+				fl.Err(err).Msg("WeighterProfile.Get")
+				return
+			}
+		}
+
+		ids = append(ids, tids...)
+	}
+
+	// For very new profiles this can happen that no IDs are returned.
+	//
+	// Or images being taken disabled/deleted that cause a profile to no longer have any.
+	if len(ids) < 1 {
+		fl.Warn().Msg("no images returned, nothing to render")
+		return
+	}
+
+	// Now hand the details off to be rendered.
+	if err := re.renderImage(prof.Size, prof.OutputFile, ids); err != nil {
+		fl.Err(err).Msg("renderImage")
+		return
+	}
+} // }}}
+
 // func Render.renderProfile {{{
 
 func (re *Render) renderProfile(prof *confProfile) {
@@ -306,8 +512,6 @@ func (re *Render) renderProfile(prof *confProfile) {
 	}
 
 	defer atomic.StoreUint32(&prof.running, 0)
-
-	start := time.Now()
 
 	// Lets get the image IDs we need, up to a max of Depth.
 	ids, err := prof.wp.Get(prof.Depth)
@@ -341,58 +545,11 @@ func (re *Render) renderProfile(prof *confProfile) {
 		return
 	}
 
-	// Ok, we have all the IDs we need.
-	// Create a new blank image.
-	img := image.NewRGBA(image.Rect(0, 0, prof.Size.X, prof.Size.Y))
-
-	// Create our sub image.
-	// This will be a smaller image within the main image, getting
-	// smaller each time a portion of the main image is filled.
-	sub := img
-
-	fl.Debug().Uint8("Depth", prof.Depth).Interface("ids", ids).Msg("check")
-
-	// Loop through all the IDs we have until we either out or have
-	// too few pixels to place the image within.
-	for _, id := range ids {
-		sub, err = re.fillImage(sub, id, prof)
-		if err != nil {
-			fl.Err(err).Msg("fillImage")
-			return
-		}
-
-		// If no sub is returned then we have not enough left over space on the image itself to put anymore.
-		if sub == nil {
-			fl.Debug().Uint8("Depth", prof.Depth).Interface("ids", ids).Uint64("id", id).Msg("no more")
-			break
-		}
-	}
-
-	// Now we open the file to write out the image.
-	//
-	// We do not defer f.Close since we want to close it right away so we can rename it.
-	f, err := os.OpenFile(prof.OutputFile+".tmp", os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		fl.Err(err).Msg("OpenFile")
+	// Now hand the details off to be rendered.
+	if err := re.renderImage(prof.Size, prof.OutputFile, ids); err != nil {
+		fl.Err(err).Msg("renderImage")
 		return
 	}
-
-	// Encode the image.
-	if err := fimg.SaveImageWebP(f, img); err != nil {
-		f.Close()
-		fl.Err(err).Msg("SaveImageWebP")
-		return
-	}
-
-	f.Close()
-
-	if err := os.Rename(prof.OutputFile+".tmp", prof.OutputFile); err != nil {
-		fl.Err(err).Msg("Rename")
-		return
-	}
-
-	// Ok, image complete.
-	fl.Debug().Stringer("took", time.Since(start)).Send()
 } // }}}
 
 // func Render.toRGBA {{{
@@ -424,7 +581,9 @@ func (re *Render) toRGBA(img image.Image) *image.RGBA {
 // Provided an image and an ID, we fill the image as much as possible by resizing the ID to fit.
 //
 // We then return any portion of the image left that we were unable to fill.
-func (re *Render) fillImage(img *image.RGBA, id uint64, prof *confProfile) (*image.RGBA, error) {
+//
+// r provided is expected to be thread safe or the caller otherwise has a lock.
+func (re *Render) fillImage(img *image.RGBA, id uint64, r *rand.Rand) (*image.RGBA, error) {
 	var layoutFlip bool
 
 	fl := re.l.With().Str("func", "fillImage").Logger()
@@ -465,15 +624,9 @@ func (re *Render) fillImage(img *image.RGBA, id uint64, prof *confProfile) (*ima
 	// Do we flip the layout or not?
 	//
 	// Meaning, rather then the top/left, we align to bottom/right
-	prof.rMut.Lock()
-	if prof.r == nil {
-		prof.r = rand.New(rand.NewSource(time.Now().UnixNano()))
-	}
-
-	if prof.r.Intn(2) > 0 {
+	if r.Intn(2) > 0 {
 		layoutFlip = true
 	}
-	prof.rMut.Unlock()
 
 	// This will be adjusted to whatever area is left over after we figure out where
 	// idImg fits within img.
@@ -585,6 +738,36 @@ func (re *Render) makeRenderIntervals() []renderInterval {
 		rInts = append(rInts, ri)
 	}
 
+	for _, prof := range co.MixProfiles {
+		// Same logic as above.
+		added = false
+
+		// Does an interval already exist for this profile to tag along on?
+		for i, _ := range rInts {
+			if rInts[i].WriteInt == prof.WriteInterval {
+				// Same duration so just append.
+				rInts[i].Mixed = append(rInts[i].Mixed, prof)
+
+				// Let the lower for loop know to continue.
+				added = true
+				break
+			}
+		}
+
+		if added {
+			continue
+		}
+
+		// No existing duration match, so create a new one and add it.
+		ri := renderInterval{
+			WriteInt: prof.WriteInterval,
+		}
+
+		ri.Mixed = append(ri.Mixed, prof)
+		rInts = append(rInts, ri)
+
+	}
+
 	// Now set the initial times.
 	for i, _ := range rInts {
 		rInts[i].NextRun = now.Add(rInts[i].WriteInt)
@@ -689,13 +872,19 @@ func (re *Render) loopy() {
 				go re.renderProfile(prof)
 			}
 
+			// Mixed profiles.
+			for _, prof := range intervals[0].Mixed {
+				fl.Debug().Str("file", prof.OutputFile).Msg("mixedTick")
+				go re.renderProfileMixed(prof)
+			}
+
 			// Update our intervals
 			intervals = re.setRenderIntervals(intervals)
 
 			// And our baseTick
 			rTick.Reset(intervals[0].NextDur)
 
-			fl.Debug().Str("OutputFile", intervals[0].Profiles[0].OutputFile).Stringer("NextDur", intervals[0].NextDur).Msg("next tick")
+			fl.Debug().Stringer("NextDur", intervals[0].NextDur).Msg("next tick")
 		case _, ok := <-ctx.Done():
 			if !ok {
 				return
