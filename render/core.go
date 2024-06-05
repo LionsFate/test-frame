@@ -835,7 +835,6 @@ func (re *Render) loopy() {
 
 	ctx := re.ctx
 
-	// So we know when the configuration is updated.
 	ourUpdated := atomic.LoadUint32(&re.updated)
 
 	// Get the initial intervals
@@ -846,7 +845,7 @@ func (re *Render) loopy() {
 
 	fl.Debug().Interface("intervals", intervals).Send()
 
-	fl.Debug().Str("OutputFile", intervals[0].Profiles[0].OutputFile).Stringer("NextDur", intervals[0].NextDur).Msg("first tick waiting")
+	fl.Debug().Stringer("NextDur", intervals[0].NextDur).Msg("first tick waiting")
 
 	for {
 		select {
@@ -867,15 +866,19 @@ func (re *Render) loopy() {
 			}
 
 			// Run through the profiles for this interval.
-			for _, prof := range intervals[0].Profiles {
-				fl.Debug().Str("file", prof.OutputFile).Msg("profileTick")
-				go re.renderProfile(prof)
+			if intervals[0].Profiles != nil {
+				for _, prof := range intervals[0].Profiles {
+					fl.Debug().Str("file", prof.OutputFile).Msg("profileTick")
+					go re.renderProfile(prof)
+				}
 			}
 
 			// Mixed profiles.
-			for _, prof := range intervals[0].Mixed {
-				fl.Debug().Str("file", prof.OutputFile).Msg("mixedTick")
-				go re.renderProfileMixed(prof)
+			if intervals[0].Mixed != nil {
+				for _, prof := range intervals[0].Mixed {
+					fl.Debug().Str("file", prof.OutputFile).Msg("mixedTick")
+					go re.renderProfileMixed(prof)
+				}
 			}
 
 			// Update our intervals
@@ -891,5 +894,4 @@ func (re *Render) loopy() {
 			}
 		}
 	}
-
 } // }}}

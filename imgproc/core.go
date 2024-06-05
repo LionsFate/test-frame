@@ -71,6 +71,8 @@ func getFileType(file string) (int, string) {
 		return 1, ""
 	case ".png":
 		return 1, ""
+	case ".webp":
+		return 1, ""
 	case ".txt":
 		// Its a sidecar - But is it for an image?
 		// If its for example, 1.mp4.txt, we don't really care.
